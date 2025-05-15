@@ -1,0 +1,22 @@
+{
+  "bindAddress": "0.0.0.0",
+  "port": "1080",
+  "username": "",
+  "password": "",
+  "connectPort": 443,
+  "dnsServers": [
+    "9.9.9.9",
+    "149.112.112.112",
+    "2620:fe::fe",
+    "2620:fe::9"
+  ],
+  "dnsTimeout": 2000000000,
+  "ipv6": false,
+  "noTunnelIPv4": false,
+  "noTunnelIPv6": false,
+  "sniAddress": "consumer-masque.cloudflareclient.com",
+  "keepalivePeriod": 30000000000,
+  "mtu": 1280,
+  "initialPacketSize": 1242,
+  "reconnectDelay": 1000000000
+}
