@@ -2,11 +2,13 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"net/netip"
 	"os"
+	"reflect"
 	"time"
 
 	"github.com/Diniboy1123/usque/api"
@@ -27,10 +29,39 @@ var socksCmd = &cobra.Command{
 			return
 		}
 
-		sni, err := cmd.Flags().GetString("sni-address")
-		if err != nil {
-			cmd.Printf("Failed to get SNI address: %v\n", err)
-			return
+		s := newSocksServerConfig()
+		useFileCfgPath, err := cmd.Flags().GetString("settings")
+		if useFileCfgPath == "" || err != nil {
+
+			if err := s.ReadFromCmd(cmd); err != nil {
+				cmd.Printf("Failed to read SOCKS server config: %v\n", err)
+				return
+			}
+		} else {
+			cmd.Printf("Using settings: %s\n", useFileCfgPath)
+
+			if err := s.ReadFromFile(useFileCfgPath); err != nil {
+				cmd.Printf("Failed to read SOCKS server config: %v\n", err)
+				return
+			}
+		}
+
+		var localAddresses []netip.Addr
+		if !s.NoTunnelIPv4 {
+			v4, err := netip.ParseAddr(config.AppConfig.IPv4)
+			if err != nil {
+				cmd.Printf("Failed to parse IPv4 address: %v\n", err)
+				return
+			}
+			localAddresses = append(localAddresses, v4)
+		}
+		if !s.NoTunnelIPv6 {
+			v6, err := netip.ParseAddr(config.AppConfig.IPv6)
+			if err != nil {
+				cmd.Printf("Failed to parse IPv6 address: %v\n", err)
+				return
+			}
+			localAddresses = append(localAddresses, v6)
 		}
 
 		privKey, err := config.AppConfig.GetEcPrivateKey()
@@ -50,92 +81,27 @@ var socksCmd = &cobra.Command{
 			return
 		}
 
-		tlsConfig, err := api.PrepareTlsConfig(privKey, peerPubKey, cert, sni)
+		tlsConfig, err := api.PrepareTlsConfig(privKey, peerPubKey, cert, s.SNIAddress)
 		if err != nil {
 			cmd.Printf("Failed to prepare TLS config: %v\n", err)
 			return
 		}
 
-		keepalivePeriod, err := cmd.Flags().GetDuration("keepalive-period")
-		if err != nil {
-			cmd.Printf("Failed to get keepalive period: %v\n", err)
-			return
-		}
-		initialPacketSize, err := cmd.Flags().GetUint16("initial-packet-size")
-		if err != nil {
-			cmd.Printf("Failed to get initial packet size: %v\n", err)
-			return
-		}
-
-		bindAddress, err := cmd.Flags().GetString("bind")
-		if err != nil {
-			cmd.Printf("Failed to get bind address: %v\n", err)
-			return
-		}
-
-		port, err := cmd.Flags().GetString("port")
-		if err != nil {
-			cmd.Printf("Failed to get port: %v\n", err)
-			return
-		}
-
-		connectPort, err := cmd.Flags().GetInt("connect-port")
-		if err != nil {
-			cmd.Printf("Failed to get connect port: %v\n", err)
-			return
-		}
-
 		var endpoint *net.UDPAddr
-		if ipv6, err := cmd.Flags().GetBool("ipv6"); err == nil && !ipv6 {
+		if s.IPv6 {
 			endpoint = &net.UDPAddr{
-				IP:   net.ParseIP(config.AppConfig.EndpointV4),
-				Port: connectPort,
+				IP:   net.ParseIP(config.AppConfig.EndpointV6),
+				Port: s.ConnectPort,
 			}
 		} else {
 			endpoint = &net.UDPAddr{
-				IP:   net.ParseIP(config.AppConfig.EndpointV6),
-				Port: connectPort,
+				IP:   net.ParseIP(config.AppConfig.EndpointV4),
+				Port: s.ConnectPort,
 			}
-		}
-
-		tunnelIPv4, err := cmd.Flags().GetBool("no-tunnel-ipv4")
-		if err != nil {
-			cmd.Printf("Failed to get no tunnel IPv4: %v\n", err)
-			return
-		}
-
-		tunnelIPv6, err := cmd.Flags().GetBool("no-tunnel-ipv6")
-		if err != nil {
-			cmd.Printf("Failed to get no tunnel IPv6: %v\n", err)
-			return
-		}
-
-		var localAddresses []netip.Addr
-		if !tunnelIPv4 {
-			v4, err := netip.ParseAddr(config.AppConfig.IPv4)
-			if err != nil {
-				cmd.Printf("Failed to parse IPv4 address: %v\n", err)
-				return
-			}
-			localAddresses = append(localAddresses, v4)
-		}
-		if !tunnelIPv6 {
-			v6, err := netip.ParseAddr(config.AppConfig.IPv6)
-			if err != nil {
-				cmd.Printf("Failed to parse IPv6 address: %v\n", err)
-				return
-			}
-			localAddresses = append(localAddresses, v6)
-		}
-
-		dnsServers, err := cmd.Flags().GetStringArray("dns")
-		if err != nil {
-			cmd.Printf("Failed to get DNS servers: %v\n", err)
-			return
 		}
 
 		var dnsAddrs []netip.Addr
-		for _, dns := range dnsServers {
+		for _, dns := range s.DNSServers {
 			addr, err := netip.ParseAddr(dns)
 			if err != nil {
 				cmd.Printf("Failed to parse DNS server: %v\n", err)
@@ -144,53 +110,23 @@ var socksCmd = &cobra.Command{
 			dnsAddrs = append(dnsAddrs, addr)
 		}
 
-		var dnsTimeout time.Duration
-		if dnsTimeout, err = cmd.Flags().GetDuration("dns-timeout"); err != nil {
-			cmd.Printf("Failed to get DNS timeout: %v\n", err)
-			return
-		}
-
-		mtu, err := cmd.Flags().GetInt("mtu")
-		if err != nil {
-			cmd.Printf("Failed to get MTU: %v\n", err)
-			return
-		}
-		if mtu != 1280 {
-			log.Println("Warning: MTU is not the default 1280. This is not supported. Packet loss and other issues may occur.")
-		}
-
-		var username string
-		var password string
-		if u, err := cmd.Flags().GetString("username"); err == nil && u != "" {
-			username = u
-		}
-		if p, err := cmd.Flags().GetString("password"); err == nil && p != "" {
-			password = p
-		}
-
-		reconnectDelay, err := cmd.Flags().GetDuration("reconnect-delay")
-		if err != nil {
-			cmd.Printf("Failed to get reconnect delay: %v\n", err)
-			return
-		}
-
-		tunDev, tunNet, err := netstack.CreateNetTUN(localAddresses, dnsAddrs, mtu)
+		tunDev, tunNet, err := netstack.CreateNetTUN(localAddresses, dnsAddrs, s.MTU)
 		if err != nil {
 			cmd.Printf("Failed to create virtual TUN device: %v\n", err)
 			return
 		}
 		defer tunDev.Close()
 
-		go api.MaintainTunnel(context.Background(), tlsConfig, keepalivePeriod, initialPacketSize, endpoint, api.NewNetstackAdapter(tunDev), mtu, reconnectDelay)
+		go api.MaintainTunnel(context.Background(), tlsConfig, s.KeepalivePeriod, s.InitialPacketSize, endpoint, api.NewNetstackAdapter(tunDev), s.MTU, s.ReconnectDelay)
 
 		var server *socks5.Server
-		if username == "" || password == "" {
+		if s.Username == "" || s.Password == "" {
 			server = socks5.NewServer(
 				socks5.WithLogger(socks5.NewLogger(log.New(os.Stdout, "socks5: ", log.LstdFlags))),
 				socks5.WithDial(func(ctx context.Context, network, addr string) (net.Conn, error) {
 					return tunNet.DialContext(ctx, network, addr)
 				}),
-				socks5.WithResolver(TunnelDNSResolver{tunNet, dnsAddrs, dnsTimeout}),
+				socks5.WithResolver(TunnelDNSResolver{tunNet, dnsAddrs, s.DNSTimeout}),
 			)
 		} else {
 			server = socks5.NewServer(
@@ -198,12 +134,12 @@ var socksCmd = &cobra.Command{
 				socks5.WithDial(func(ctx context.Context, network, addr string) (net.Conn, error) {
 					return tunNet.DialContext(ctx, network, addr)
 				}),
-				socks5.WithResolver(TunnelDNSResolver{tunNet, dnsAddrs, dnsTimeout}),
+				socks5.WithResolver(TunnelDNSResolver{tunNet, dnsAddrs, s.DNSTimeout}),
 				socks5.WithAuthMethods(
 					[]socks5.Authenticator{
 						socks5.UserPassAuthenticator{
 							Credentials: socks5.StaticCredentials{
-								username: password,
+								s.Username: s.Password,
 							},
 						},
 					},
@@ -211,8 +147,8 @@ var socksCmd = &cobra.Command{
 			)
 		}
 
-		log.Printf("SOCKS proxy listening on %s:%s", bindAddress, port)
-		if err := server.ListenAndServe("tcp", net.JoinHostPort(bindAddress, port)); err != nil {
+		log.Printf("SOCKS proxy listening on %s:%s", s.BindAddress, s.Port)
+		if err := server.ListenAndServe("tcp", net.JoinHostPort(s.BindAddress, s.Port)); err != nil {
 			cmd.Printf("Failed to start SOCKS proxy: %v\n", err)
 			return
 		}
@@ -263,21 +199,130 @@ func (r TunnelDNSResolver) Resolve(ctx context.Context, name string) (context.Co
 	return ctx, nil, fmt.Errorf("all DNS servers failed: %v", lastErr)
 }
 
+type SocksServerConfig struct {
+	BindAddress       string        `json:"bindAddress" cmd:"bind" shorthand:"b"`
+	Port              string        `json:"port" cmd:"port" shorthand:"p"`
+	Username          string        `json:"username" cmd:"username"`
+	Password          string        `json:"password" cmd:"password"`
+	ConnectPort       int           `json:"connectPort" cmd:"connect-port"`
+	DNSServers        []string      `json:"dnsServers" cmd:"dns"`
+	DNSTimeout        time.Duration `json:"dnsTimeout" cmd:"dns-timeout"`
+	IPv6              bool          `json:"ipv6" cmd:"ipv6"`
+	NoTunnelIPv4      bool          `json:"noTunnelIPv4" cmd:"no-tunnel-ipv4"`
+	NoTunnelIPv6      bool          `json:"noTunnelIPv6" cmd:"no-tunnel-ipv6"`
+	SNIAddress        string        `json:"sniAddress" cmd:"sni-address"`
+	KeepalivePeriod   time.Duration `json:"keepalivePeriod" cmd:"keepalive-period"`
+	MTU               int           `json:"mtu" cmd:"mtu"`
+	InitialPacketSize uint16        `json:"initialPacketSize" cmd:"initial-packet-size"`
+	ReconnectDelay    time.Duration `json:"reconnectDelay" cmd:"reconnect-delay"`
+}
+
+func newSocksServerConfig() *SocksServerConfig {
+	return &SocksServerConfig{
+		BindAddress:       internal.DefaultSocksBindAddress,
+		Port:              internal.DefaultSocksPort,
+		Username:          "",
+		Password:          "",
+		ConnectPort:       internal.DefaultSocksConnectPort,
+		DNSServers:        []string{"9.9.9.9", "149.112.112.112", "2620:fe::fe", "2620:fe::9"},
+		DNSTimeout:        internal.DefaultSocksDnsTimeout,
+		IPv6:              false,
+		NoTunnelIPv4:      false,
+		NoTunnelIPv6:      false,
+		SNIAddress:        internal.ConnectSNI,
+		KeepalivePeriod:   internal.DefaultSocksKeepalivePeriod,
+		MTU:               internal.DefaultSocksMTU,
+		InitialPacketSize: internal.DefaultSocksInitialPacketSize,
+		ReconnectDelay:    internal.DefaultSocksReconnectDelay,
+	}
+}
+
+// ReadFromCmd reads the configuration from command line flags.
+func (s *SocksServerConfig) ReadFromCmd(cmd *cobra.Command) error {
+	cmdAutoGet := func(cmd *cobra.Command, name string, typeName string) (interface{}, error) {
+		switch typeName {
+		case "string":
+			return cmd.Flags().GetString(name)
+		case "int":
+			return cmd.Flags().GetInt(name)
+		case "uint16":
+			return cmd.Flags().GetUint16(name)
+		case "bool":
+			return cmd.Flags().GetBool(name)
+		case "time.Duration":
+			return cmd.Flags().GetDuration(name)
+		case "[]string":
+			return cmd.Flags().GetStringArray(name)
+		default:
+			return nil, fmt.Errorf("unsupported type %s", typeName)
+		}
+	}
+	fields := reflect.TypeOf(*s)
+	v := reflect.ValueOf(s).Elem()
+	for i := 0; i < fields.NumField(); i++ {
+		field := fields.Field(i)
+		tag := field.Tag.Get("cmd")
+		if tag == "" {
+			continue
+		}
+		value, err := cmdAutoGet(cmd, tag, field.Type.String())
+		if err != nil {
+			return fmt.Errorf("failed to get flag %s: %v", tag, err)
+		}
+
+		v.Field(i).Set(reflect.ValueOf(value))
+	}
+	return nil
+}
+
+// ReadFromFile reads the configuration from a JSON file.
+func (s *SocksServerConfig) ReadFromFile(filePath string) error {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	if err = json.NewDecoder(file).Decode(s); err != nil {
+		return err
+	}
+
+	if s.ReconnectDelay < internal.DefaultSocksReconnectDelay {
+		s.ReconnectDelay = internal.DefaultSocksReconnectDelay
+	}
+
+	if s.KeepalivePeriod < internal.DefaultSocksKeepalivePeriod {
+		s.KeepalivePeriod = internal.DefaultSocksKeepalivePeriod
+	}
+
+	if s.DNSTimeout < internal.DefaultSocksDnsTimeout {
+		s.DNSTimeout = internal.DefaultSocksDnsTimeout
+	}
+
+	if len(s.DNSServers) == 0 {
+		s.DNSServers = internal.DefaultSocksDnsServers
+	}
+
+	return nil
+}
+
 func init() {
-	socksCmd.Flags().StringP("bind", "b", "0.0.0.0", "Address to bind the SOCKS proxy to")
-	socksCmd.Flags().StringP("port", "p", "1080", "Port to listen on for SOCKS proxy")
+	socksCmd.Flags().String("settings", "", "Path to JSON file with settings")
+	// SocksServer Settings
+	socksCmd.Flags().StringP("bind", "b", internal.DefaultSocksBindAddress, "Address to bind the SOCKS proxy to")
+	socksCmd.Flags().StringP("port", "p", internal.DefaultSocksPort, "Port to listen on for SOCKS proxy")
 	socksCmd.Flags().StringP("username", "u", "", "Username for proxy authentication (specify both username and password to enable)")
 	socksCmd.Flags().StringP("password", "w", "", "Password for proxy authentication (specify both username and password to enable)")
-	socksCmd.Flags().IntP("connect-port", "P", 443, "Used port for MASQUE connection")
-	socksCmd.Flags().StringArrayP("dns", "d", []string{"9.9.9.9", "149.112.112.112", "2620:fe::fe", "2620:fe::9"}, "DNS servers to use inside the MASQUE tunnel")
-	socksCmd.Flags().DurationP("dns-timeout", "t", 2*time.Second, "Timeout for DNS queries on a specific server (tries the next server if exceeded)")
+	socksCmd.Flags().IntP("connect-port", "P", internal.DefaultSocksConnectPort, "Used port for MASQUE connection")
+	socksCmd.Flags().StringArrayP("dns", "d", internal.DefaultSocksDnsServers, "DNS servers to use inside the MASQUE tunnel")
+	socksCmd.Flags().DurationP("dns-timeout", "t", internal.DefaultSocksDnsTimeout, "Timeout for DNS queries on a specific server (tries the next server if exceeded)")
 	socksCmd.Flags().BoolP("ipv6", "6", false, "Use IPv6 for MASQUE connection")
 	socksCmd.Flags().BoolP("no-tunnel-ipv4", "F", false, "Disable IPv4 inside the MASQUE tunnel")
 	socksCmd.Flags().BoolP("no-tunnel-ipv6", "S", false, "Disable IPv6 inside the MASQUE tunnel")
 	socksCmd.Flags().StringP("sni-address", "s", internal.ConnectSNI, "SNI address to use for MASQUE connection")
-	socksCmd.Flags().DurationP("keepalive-period", "k", 30*time.Second, "Keepalive period for MASQUE connection")
-	socksCmd.Flags().IntP("mtu", "m", 1280, "MTU for MASQUE connection")
-	socksCmd.Flags().Uint16P("initial-packet-size", "i", 1242, "Initial packet size for MASQUE connection")
-	socksCmd.Flags().DurationP("reconnect-delay", "r", 1*time.Second, "Delay between reconnect attempts")
+	socksCmd.Flags().DurationP("keepalive-period", "k", internal.DefaultSocksKeepalivePeriod, "Keepalive period for MASQUE connection")
+	socksCmd.Flags().IntP("mtu", "m", internal.DefaultSocksMTU, "MTU for MASQUE connection")
+	socksCmd.Flags().Uint16P("initial-packet-size", "i", internal.DefaultSocksInitialPacketSize, "Initial packet size for MASQUE connection")
+	socksCmd.Flags().DurationP("reconnect-delay", "r", internal.DefaultSocksReconnectDelay, "Delay between reconnect attempts")
 	rootCmd.AddCommand(socksCmd)
 }
