@@ -339,5 +339,6 @@ func init() {
 	portFwCmd.Flags().DurationP("keepalive-period", "k", 30*time.Second, "Keepalive period for MASQUE connection")
 	portFwCmd.Flags().IntP("mtu", "m", 1280, "MTU for MASQUE connection")
 	portFwCmd.Flags().Uint16P("initial-packet-size", "i", 1242, "Initial packet size for MASQUE connection")
+	portFwCmd.Flags().DurationP("reconnect-delay", "r", 1*time.Second, "Delay between reconnect attempts")
 	rootCmd.AddCommand(portFwCmd)
 }
