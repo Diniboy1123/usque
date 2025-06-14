@@ -9,27 +9,30 @@ import (
 
 	"github.com/Diniboy1123/usque/api"
 	"github.com/Diniboy1123/usque/config"
-	"github.com/songgao/water"
 	"github.com/vishvananda/netlink"
+	"golang.zx2c4.com/wireguard/tun"
 )
 
 var longDescription = "Expose Warp as a native TUN device that accepts any IP traffic." +
 	" Requires root, tun.ko, and iproute2."
 
 func (t *tunDevice) create() (api.TunnelDevice, error) {
-	platformSpecificParams := water.PlatformSpecificParams{
-		Name: t.name,
+	if t.name == "" {
+		t.name = "tun0"
 	}
 
-	dev, err := water.New(water.Config{DeviceType: water.TUN, PlatformSpecificParams: platformSpecificParams})
+	dev, err := tun.CreateTUN(t.name, t.mtu)
 	if err != nil {
 		return nil, err
 	}
 
-	t.name = dev.Name()
+	t.name, err = dev.Name()
+	if err != nil {
+		return nil, err
+	}
 
 	if t.iproute2 {
-		link, err := netlink.LinkByName(dev.Name())
+		link, err := netlink.LinkByName(t.name)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get link: %v", err)
 		}
@@ -65,5 +68,5 @@ func (t *tunDevice) create() (api.TunnelDevice, error) {
 		log.Printf("IPv6: %s", config.AppConfig.IPv6)
 	}
 
-	return api.NewWaterAdapter(dev), nil
+	return api.NewNetstackAdapter(dev), nil
 }

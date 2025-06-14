@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/Diniboy1123/usque/internal"
-	"github.com/songgao/water"
 	"golang.zx2c4.com/wireguard/tun"
 )
 
@@ -64,6 +63,10 @@ type TunnelDevice interface {
 	WritePacket(pkt []byte) error
 }
 
+// see https://github.com/WireGuard/wireguard-go/blob/f333402bd9cbe0f3eeb02507bd14e23d7d639280/tun/offload_linux.go#L27
+// for details on how this is calculated
+const virtioNetHdrLen = 10
+
 // NetstackAdapter wraps a tun.Device (e.g. from netstack) to satisfy TunnelDevice.
 type NetstackAdapter struct {
 	dev             tun.Device
@@ -93,8 +96,10 @@ func (n *NetstackAdapter) ReadPacket(buf []byte) (int, error) {
 }
 
 func (n *NetstackAdapter) WritePacket(pkt []byte) error {
-	// Write expects a slice of packet buffers.
-	_, err := n.dev.Write([][]byte{pkt}, 0)
+	if len(pkt) < virtioNetHdrLen {
+		return fmt.Errorf("buffer too small for virtio header")
+	}
+	_, err := n.dev.Write([][]byte{pkt}, virtioNetHdrLen)
 	return err
 }
 
@@ -117,30 +122,6 @@ func NewNetstackAdapter(dev tun.Device) TunnelDevice {
 	}
 }
 
-// WaterAdapter wraps a *water.Interface so it satisfies TunnelDevice.
-type WaterAdapter struct {
-	iface *water.Interface
-}
-
-func (w *WaterAdapter) ReadPacket(buf []byte) (int, error) {
-	n, err := w.iface.Read(buf)
-	if err != nil {
-		return 0, err
-	}
-
-	return n, nil
-}
-
-func (w *WaterAdapter) WritePacket(pkt []byte) error {
-	_, err := w.iface.Write(pkt)
-	return err
-}
-
-// NewWaterAdapter creates a new WaterAdapter.
-func NewWaterAdapter(iface *water.Interface) TunnelDevice {
-	return &WaterAdapter{iface: iface}
-}
-
 // MaintainTunnel continuously connects to the MASQUE server, then starts two
 // forwarding goroutines: one forwarding from the device to the IP connection (and handling
 // any ICMP reply), and the other forwarding from the IP connection to the device.
@@ -156,7 +137,7 @@ func NewWaterAdapter(iface *water.Interface) TunnelDevice {
 //   - mtu: int - The MTU of the TUN device.
 //   - reconnectDelay: time.Duration - The delay between reconnect attempts.
 func MaintainTunnel(ctx context.Context, tlsConfig *tls.Config, keepalivePeriod time.Duration, initialPacketSize uint16, endpoint *net.UDPAddr, device TunnelDevice, mtu int, reconnectDelay time.Duration) {
-	packetBufferPool := NewNetBuffer(mtu)
+	packetBufferPool := NewNetBuffer(mtu + virtioNetHdrLen)
 	for {
 		log.Printf("Establishing MASQUE connection to %s:%d", endpoint.IP, endpoint.Port)
 		udpConn, tr, ipConn, rsp, err := ConnectTunnel(
@@ -190,26 +171,23 @@ func MaintainTunnel(ctx context.Context, tlsConfig *tls.Config, keepalivePeriod 
 		go func() {
 			for {
 				buf := packetBufferPool.Get()
-				n, err := device.ReadPacket(buf)
+				n, err := device.ReadPacket(buf[virtioNetHdrLen:])
 				if err != nil {
 					packetBufferPool.Put(buf)
 					errChan <- fmt.Errorf("failed to read from TUN device: %v", err)
 					return
 				}
-				icmp, err := ipConn.WritePacket(buf[:n])
+				icmp, err := ipConn.WritePacket(buf[virtioNetHdrLen : virtioNetHdrLen+n])
 				if err != nil {
 					packetBufferPool.Put(buf)
 					errChan <- fmt.Errorf("failed to write to IP connection: %v", err)
 					return
 				}
-				packetBufferPool.Put(buf)
-
 				if len(icmp) > 0 {
-					if err := device.WritePacket(icmp); err != nil {
-						errChan <- fmt.Errorf("failed to write ICMP to TUN device: %v", err)
-						return
-					}
+					copy(buf[virtioNetHdrLen:], icmp)
+					_ = device.WritePacket(buf[:virtioNetHdrLen+len(icmp)])
 				}
+				packetBufferPool.Put(buf)
 			}
 		}()
 
@@ -217,12 +195,12 @@ func MaintainTunnel(ctx context.Context, tlsConfig *tls.Config, keepalivePeriod 
 			buf := packetBufferPool.Get()
 			defer packetBufferPool.Put(buf)
 			for {
-				n, err := ipConn.ReadPacket(buf, true)
+				n, err := ipConn.ReadPacket(buf[virtioNetHdrLen:], true)
 				if err != nil {
 					errChan <- fmt.Errorf("failed to read from IP connection: %v", err)
 					return
 				}
-				if err := device.WritePacket(buf[:n]); err != nil {
+				if err := device.WritePacket(buf[:virtioNetHdrLen+n]); err != nil {
 					errChan <- fmt.Errorf("failed to write to TUN device: %v", err)
 					return
 				}
