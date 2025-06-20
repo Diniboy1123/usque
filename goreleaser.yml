@@ -27,10 +27,14 @@ builds:
       - amd64
       - arm
       - arm64
+      - mips
+      - mipsle
     goarm:
       - 5
       - 6
       - 7
+    gomips:
+      - softfloat
     env:
       - CGO_ENABLED=0
     flags:
