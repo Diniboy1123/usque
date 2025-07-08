@@ -443,6 +443,21 @@ As a starting point, you can reach out to the [`api/`](api/) package. For exampl
 
 There is hardly a way to distinguish MASQUE traffic from other HTTP/3 traffic. However QUIC mandates TLS v1.3 so we send a ClientHello with `client-masque.cloudflareclient.com` in the SNI field. Some firewalls may block this. You can change the SNI by specifying `-s` flag to any domain *(based on my experience)* and the connection will still work. Please note that this is definitely not Cloudflare's intended use case *(just a nice side effect)*. And before doing any circumvention attempts, you should make sure you are not breaking any laws. Personally I only see this as a clear benefit for masking the fact that we are connecting to Warp from MiTMers.
 
+### HTTP/2 Fallback Support
+
+The tool now includes HTTP/2 fallback support for better compatibility when HTTP/3 over QUIC is not available or blocked. The connection process works as follows:
+
+1. **Primary connection**: Attempts HTTP/3 over QUIC (the preferred method)
+2. **Fallback detection**: If HTTP/3 fails, the tool automatically tests HTTP/2 connectivity
+3. **Error reporting**: Provides clear information about which protocols were attempted and why they failed
+
+This fallback mechanism is particularly useful in environments where:
+- QUIC/UDP traffic is blocked or throttled
+- Network middleboxes interfere with QUIC connections
+- Firewalls allow TCP but restrict UDP protocols
+
+The HTTP/2 fallback currently provides connection testing and protocol negotiation. The TLS configuration automatically includes support for HTTP/3 (`h3`), HTTP/2 (`h2`), and HTTP/1.1 protocols, allowing the best available protocol to be negotiated during the TLS handshake.
+
 ## Should I replace WireGuard with this?
 
 That depends on your needs. 😊 WireGuard is a great protocol and its modern/fast cryptography plus the ability to have kernel mode support are both great things. If it works for you, I don't believe you should switch.
