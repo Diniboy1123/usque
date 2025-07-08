@@ -161,7 +161,7 @@ func MaintainTunnel(ctx context.Context, tlsConfig *tls.Config, keepalivePeriod 
 	packetBufferPool := NewNetBuffer(mtu)
 	for {
 		log.Printf("Establishing MASQUE connection to %s:%d", endpoint.IP, endpoint.Port)
-		udpConn, tr, ipConn, rsp, err := ConnectTunnel(
+		udpConn, tr, ipConn, rsp, err := ConnectTunnelWithFallback(
 			ctx,
 			tlsConfig,
 			internal.DefaultQuicConfig(keepalivePeriod, initialPacketSize),

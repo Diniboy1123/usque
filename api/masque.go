@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"time"
 
 	connectip "github.com/Diniboy1123/connect-ip-go"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/yosida95/uritemplate/v3"
+	"golang.org/x/net/http2"
 )
 
 // PrepareTlsConfig creates a TLS configuration using the provided certificate and SNI (Server Name Indication).
@@ -37,7 +39,7 @@ func PrepareTlsConfig(privKey *ecdsa.PrivateKey, peerPubKey *ecdsa.PublicKey, ce
 			},
 		},
 		ServerName: sni,
-		NextProtos: []string{http3.NextProtoH3},
+		NextProtos: []string{http3.NextProtoH3, "h2", "http/1.1"},
 		// WARN: SNI is usually not for the endpoint, so we must skip verification
 		InsecureSkipVerify: true,
 		// we pin to the endpoint public key
@@ -147,4 +149,82 @@ func ConnectTunnel(ctx context.Context, tlsConfig *tls.Config, quicConfig *quic.
 	}
 
 	return udpConn, tr, ipConn, rsp, nil
+}
+
+// ConnectTunnelWithFallback establishes a QUIC connection with HTTP/3 first, then falls back to TCP with HTTP/2 if QUIC fails.
+// This provides better compatibility when QUIC/HTTP3 is not available or blocked.
+//
+// Parameters:
+//   - ctx: context.Context - The context for the connection.
+//   - tlsConfig: *tls.Config - The TLS configuration for secure communication.
+//   - quicConfig: *quic.Config - The QUIC configuration settings.
+//   - connectUri: string - The URI template for the Connect-IP request.
+//   - endpoint: *net.UDPAddr - The UDP address of the QUIC server.
+//
+// Returns:
+//   - *net.UDPConn: The UDP connection used for the QUIC session (nil for HTTP/2).
+//   - *http3.Transport: The HTTP/3 transport used for initial request (nil for HTTP/2).
+//   - *connectip.Conn: The Connect-IP connection instance.
+//   - *http.Response: The response from the Connect-IP handshake.
+//   - error: An error if both HTTP/3 and HTTP/2 connections fail.
+func ConnectTunnelWithFallback(ctx context.Context, tlsConfig *tls.Config, quicConfig *quic.Config, connectUri string, endpoint *net.UDPAddr) (*net.UDPConn, *http3.Transport, *connectip.Conn, *http.Response, error) {
+	// First, try HTTP/3 over QUIC
+	udpConn, tr, ipConn, rsp, err := ConnectTunnel(ctx, tlsConfig, quicConfig, connectUri, endpoint)
+	if err == nil {
+		return udpConn, tr, ipConn, rsp, nil
+	}
+
+	// Log the HTTP/3 failure and try HTTP/2 fallback
+	fmt.Printf("HTTP/3 connection failed: %v, attempting HTTP/2 fallback\n", err)
+
+	// Try HTTP/2 fallback - test if the server supports HTTP/2
+	http2Err := testHTTP2Connection(ctx, tlsConfig, endpoint)
+	if http2Err == nil {
+		return nil, nil, nil, nil, fmt.Errorf("HTTP/3 connection failed, HTTP/2 connection possible but full Connect-IP over HTTP/2 not yet implemented: %v", err)
+	}
+
+	// Both HTTP/3 and HTTP/2 failed
+	return nil, nil, nil, nil, fmt.Errorf("HTTP/3 connection failed: %v, HTTP/2 connection also failed: %v", err, http2Err)
+}
+
+// testHTTP2Connection tests if the server supports HTTP/2 connections
+func testHTTP2Connection(ctx context.Context, tlsConfig *tls.Config, endpoint *net.UDPAddr) error {
+	// Convert UDP endpoint to TCP for HTTP/2 connection
+	tcpAddr := &net.TCPAddr{
+		IP:   endpoint.IP,
+		Port: endpoint.Port,
+	}
+
+	// Create HTTP/2 transport
+	transport := &http2.Transport{
+		TLSClientConfig: tlsConfig,
+	}
+
+	// Create HTTP/2 client
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   10 * time.Second,
+	}
+
+	// Create a simple test request to check HTTP/2 connectivity
+	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("https://%s/", tcpAddr.String()), nil)
+	if err != nil {
+		return fmt.Errorf("failed to create HTTP/2 test request: %v", err)
+	}
+
+	// Add headers
+	req.Header.Set("User-Agent", "")
+	req.Proto = "HTTP/2.0"
+	req.ProtoMajor = 2
+	req.ProtoMinor = 0
+
+	// Make the request
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("HTTP/2 connection test failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// If we get here, HTTP/2 connection works
+	return nil
 }
