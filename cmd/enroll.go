@@ -103,10 +103,21 @@ var enrollCmd = &cobra.Command{
 						log.Fatalf("Failed to enroll key: %v", err)
 					}
 				} else {
-					log.Fatalf("Enrollment aborted by user. API errors: %s", apiErr.ErrorsAsString("; "))
+					// Same nil guard as the outer-else branch below.
+					if apiErr != nil {
+						log.Fatalf("Enrollment aborted by user. API errors: %s", apiErr.ErrorsAsString("; "))
+					}
+					log.Fatal("Enrollment aborted by user.")
 				}
 			} else {
-				log.Fatalf("Failed to enroll key: %v (API errors: %s)", err, apiErr.ErrorsAsString("; "))
+				// apiErr can be nil whenever EnrollKey failed before it
+				// got a parseable response back (e.g. a transport error),
+				// so guard the format to match the key-regen branch above
+				// and avoid the nil-pointer panic on non-API errors (#86).
+				if apiErr != nil {
+					log.Fatalf("Failed to enroll key: %v (API errors: %s)", err, apiErr.ErrorsAsString("; "))
+				}
+				log.Fatalf("Failed to enroll key: %v", err)
 			}
 		}
 
