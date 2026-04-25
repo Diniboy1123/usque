@@ -271,14 +271,29 @@ var socksCmd = &cobra.Command{
 			resolver.TunNet = tunNet
 		}
 
+		udpAdvertiseAddr, err := cmd.Flags().GetString("udp-advertise-addr")
+		if err != nil {
+			cmd.Printf("Failed to get udp-advertise-addr flag: %v\n", err)
+			return
+		}
+
+		udpBindAddr, err := cmd.Flags().GetString("udp-bind-addr")
+		if err != nil {
+			cmd.Printf("Failed to get udp-bind-addr flag: %v\n", err)
+			return
+		}
+
 		server, err := internal.NewSOCKS5Server(internal.SOCKS5Config{
-			Addr:       net.JoinHostPort(bindAddress, port),
-			Username:   username,
-			Password:   password,
-			Resolver:   resolver,
-			TunNet:     tunNet,
-			UDPTimeout: udpTimeout,
-			Logger:     log.New(internal.NewTZStampWriter(os.Stderr), "socks5: ", 0),
+			Addr:             net.JoinHostPort(bindAddress, port),
+			Username:         username,
+			Password:         password,
+			Resolver:         resolver,
+			TunNet:           tunNet,
+			UDPTimeout:       udpTimeout,
+			DialTimeout:      15 * time.Second,
+			UDPBindAddr:      udpBindAddr,
+			UDPAdvertiseAddr: udpAdvertiseAddr,
+			Logger:           log.New(internal.NewTZStampWriter(os.Stderr), "socks5: ", 0),
 		})
 		if err != nil {
 			cmd.Printf("Failed to create SOCKS proxy: %v\n", err)
@@ -317,5 +332,7 @@ func init() {
 	socksCmd.Flags().Bool("system-dns", false, "With -l, resolve names via the OS (e.g. /etc/resolv.conf) instead of -d")
 	socksCmd.Flags().String("on-connect", "", "Path to an executable to run after each successful tunnel connect (no args; context via USQUE_* env vars)")
 	socksCmd.Flags().String("on-disconnect", "", "Path to an executable to run after each tunnel disconnect (no args; context via USQUE_* env vars)")
+	socksCmd.Flags().String("udp-bind-addr", "", "Address (host:port) for the UDP relay socket to bind on. Defaults to --bind:--port. Use when TCP is behind a TLS proxy on localhost but UDP must be directly reachable (e.g. \"0.0.0.0:3328\")")
+	socksCmd.Flags().String("udp-advertise-addr", "", "Public IP (or IP:port) to advertise in UDP ASSOCIATE replies. Required when the server is behind NAT or on a remote host. Formats: \"1.2.3.4\", \"1.2.3.4:1080\", \"[::1]:1080\". Port defaults to --port when omitted.")
 	rootCmd.AddCommand(socksCmd)
 }

@@ -26,6 +26,23 @@ type SOCKS5Config struct {
 	TCPTimeout time.Duration // 0 = no deadline on TCP CONNECT relay
 	UDPTimeout time.Duration // 0 = no deadline on remote UDP reads
 	Logger     *log.Logger
+	// DialTimeout bounds how long dialTCP/dialUDP wait for a connection through
+	// the tunnel. Without this, a broken tunnel causes netstack TCP SYN retransmits
+	// that can block for minutes. 0 means no timeout (not recommended).
+	DialTimeout time.Duration
+	// UDPBindAddr is the address the UDP relay socket listens on. When empty,
+	// it defaults to Addr (same as TCP). Use this when TCP is behind a TLS
+	// proxy (e.g. stunnel) on localhost but UDP must be directly reachable
+	// from the outside. Example: Addr="127.0.0.1:6012", UDPBindAddr="0.0.0.0:3328".
+	UDPBindAddr string
+	// UDPAdvertiseAddr is the address returned to clients in the UDP ASSOCIATE
+	// reply (BND.ADDR). When empty, the server's TCP listen address is used,
+	// which is correct for local/LAN use. Set this to the server's public IP
+	// (and optionally port) when the server is behind NAT or on a remote host,
+	// so clients can reach the UDP relay socket from the outside.
+	// Accepted formats: "1.2.3.4", "1.2.3.4:1080", "[::1]", "[::1]:1080".
+	// When no port is given, the port from Addr is used.
+	UDPAdvertiseAddr string
 }
 
 // SOCKS5Server wraps txthinking/socks5; DialTCP/DialUDP are package globals (last NewSOCKS5Server wins).
@@ -43,6 +60,12 @@ func NewSOCKS5Server(cfg SOCKS5Config) (*SOCKS5Server, error) {
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = log.Default()
+	}
+
+	if cfg.UDPAdvertiseAddr != "" {
+		if _, err := resolveAdvertiseAddr(cfg.UDPAdvertiseAddr, cfg.Addr); err != nil {
+			return nil, fmt.Errorf("socks5: invalid udp-advertise-addr: %w", err)
+		}
 	}
 
 	// BND.ADDR for UDP ASSOCIATE is set in TCPHandle via c.LocalAddr(), not here.
@@ -110,6 +133,24 @@ func (s *SOCKS5Server) Start() error {
 	return s.listenAndServe()
 }
 
+// dialContext returns a context (and cancel func) bounded by DialTimeout.
+// The caller must call cancel when the dial completes.
+func (s *SOCKS5Server) dialContext() (context.Context, context.CancelFunc) {
+	if s.cfg.DialTimeout > 0 {
+		return context.WithTimeout(context.Background(), s.cfg.DialTimeout)
+	}
+	return context.Background(), func() {}
+}
+
+// udpListenAddr returns the address the UDP relay should bind to.
+// Falls back to the TCP listen address when UDPBindAddr is not set.
+func (s *SOCKS5Server) udpListenAddr() string {
+	if s.cfg.UDPBindAddr != "" {
+		return s.cfg.UDPBindAddr
+	}
+	return s.server.Addr
+}
+
 // listenAndServe mirrors socks5.Server.ListenAndServe but the UDP relay uses
 // udpReadBufPool. Datagrams reference the buffer until UDPHandle returns.
 func (s *SOCKS5Server) listenAndServe() error {
@@ -152,11 +193,12 @@ func (s *SOCKS5Server) listenAndServe() error {
 			return l.Close()
 		},
 	})
-	addr1, err := net.ResolveUDPAddr("udp", srv.Addr)
+	addr1, err := net.ResolveUDPAddr("udp", s.udpListenAddr())
 	if err != nil {
 		_ = l.Close()
 		return err
 	}
+	s.cfg.Logger.Printf("UDP relay listening on %s", addr1)
 	srv.UDPConn, err = net.ListenUDP("udp", addr1)
 	if err != nil {
 		_ = l.Close()
@@ -201,9 +243,12 @@ func (s *SOCKS5Server) listenAndServe() error {
 }
 
 func (s *SOCKS5Server) dialTCP(network, _, raddr string) (net.Conn, error) {
+	ctx, cancel := s.dialContext()
+	defer cancel()
+
 	// Default (tunnel DNS): one netstack lookup + dial, same as the old things-go WithDial path.
 	if s.cfg.Resolver.TunNet != nil {
-		return s.cfg.TunNet.DialContext(context.Background(), network, raddr)
+		return s.cfg.TunNet.DialContext(ctx, network, raddr)
 	}
 	host, port, err := net.SplitHostPort(raddr)
 	if err != nil {
@@ -214,9 +259,9 @@ func (s *SOCKS5Server) dialTCP(network, _, raddr string) (net.Conn, error) {
 		if err != nil {
 			return nil, err
 		}
-		return s.cfg.TunNet.DialContextTCP(context.Background(), addr)
+		return s.cfg.TunNet.DialContextTCP(ctx, addr)
 	}
-	ctx, resIP, err := s.cfg.Resolver.Resolve(context.Background(), host)
+	rctx, resIP, err := s.cfg.Resolver.Resolve(ctx, host)
 	if err != nil {
 		return nil, err
 	}
@@ -224,12 +269,15 @@ func (s *SOCKS5Server) dialTCP(network, _, raddr string) (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return s.cfg.TunNet.DialContextTCP(ctx, addr)
+	return s.cfg.TunNet.DialContextTCP(rctx, addr)
 }
 
 func (s *SOCKS5Server) dialUDP(network, laddr, raddr string) (net.Conn, error) {
+	ctx, cancel := s.dialContext()
+	defer cancel()
+
 	if s.cfg.Resolver.TunNet != nil {
-		c, err := s.cfg.TunNet.DialContext(context.Background(), network, raddr)
+		c, err := s.cfg.TunNet.DialContext(ctx, network, raddr)
 		if err != nil {
 			if strings.Contains(err.Error(), "port is in use") {
 				return nil, &net.AddrError{Err: "address already in use", Addr: laddr}
@@ -249,7 +297,7 @@ func (s *SOCKS5Server) dialUDP(network, laddr, raddr string) (net.Conn, error) {
 		}
 		return s.cfg.TunNet.DialUDP(nil, addr)
 	}
-	_, resIP, err := s.cfg.Resolver.Resolve(context.Background(), host)
+	_, resIP, err := s.cfg.Resolver.Resolve(ctx, host)
 	if err != nil {
 		return nil, err
 	}
@@ -276,7 +324,11 @@ func (s *SOCKS5Server) TCPHandle(srv *socks5.Server, c *net.TCPConn, r *socks5.R
 		}
 		defer func() { _ = rc.Close() }()
 
+		done := make(chan struct{})
+
+		// rc → c: when the remote closes, signal the client side.
 		go func() {
+			defer close(done)
 			bp := tcpRelayBufPool.Get().(*[]byte)
 			buf := *bp
 			defer tcpRelayBufPool.Put(bp)
@@ -288,6 +340,9 @@ func (s *SOCKS5Server) TCPHandle(srv *socks5.Server, c *net.TCPConn, r *socks5.R
 				}
 				n, err := rc.Read(buf)
 				if err != nil {
+					// Remote closed — half-close the client write direction
+					// so the client learns immediately instead of hanging.
+					_ = c.CloseWrite()
 					return
 				}
 				if _, err := c.Write(buf[:n]); err != nil {
@@ -296,6 +351,7 @@ func (s *SOCKS5Server) TCPHandle(srv *socks5.Server, c *net.TCPConn, r *socks5.R
 			}
 		}()
 
+		// c → rc
 		bp := tcpRelayBufPool.Get().(*[]byte)
 		buf := *bp
 		defer tcpRelayBufPool.Put(bp)
@@ -315,7 +371,15 @@ func (s *SOCKS5Server) TCPHandle(srv *socks5.Server, c *net.TCPConn, r *socks5.R
 		}
 
 	case socks5.CmdUDP:
-		caddr, err := r.UDP(c, c.LocalAddr())
+		udpAddr := net.Addr(c.LocalAddr())
+		if s.cfg.UDPAdvertiseAddr != "" {
+			advertised, err := resolveAdvertiseAddr(s.cfg.UDPAdvertiseAddr, s.server.Addr)
+			if err != nil {
+				return fmt.Errorf("failed to resolve udp-advertise-addr: %w", err)
+			}
+			udpAddr = advertised
+		}
+		caddr, err := r.UDP(c, udpAddr)
 		if err != nil {
 			return err
 		}
@@ -333,6 +397,7 @@ func (s *SOCKS5Server) TCPHandle(srv *socks5.Server, c *net.TCPConn, r *socks5.R
 // UDPHandle is like txthinking DefaultHandle.UDPHandle but does not use srv.UDPSrc.
 func (s *SOCKS5Server) UDPHandle(srv *socks5.Server, addr *net.UDPAddr, d *socks5.Datagram) error {
 	src := addr.String()
+	dst := d.Address()
 	var ch chan byte
 	if srv.LimitUDP {
 		any, ok := srv.AssociatedUDP.Get(src)
@@ -351,7 +416,6 @@ func (s *SOCKS5Server) UDPHandle(srv *socks5.Server, addr *net.UDPAddr, d *socks
 		}
 	}
 
-	dst := d.Address()
 	if iue, ok := srv.UDPExchanges.Get(src + dst); ok {
 		return send(iue.(*socks5.UDPExchange), d.Data)
 	}
@@ -428,4 +492,37 @@ func (s *SOCKS5Server) UDPHandle(srv *socks5.Server, addr *net.UDPAddr, d *socks
 	}(ue, dst)
 
 	return nil
+}
+
+// resolveAdvertiseAddr resolves the user-supplied UDP advertise address into a
+// *net.UDPAddr. advertise may be:
+//   - bare IP:           "1.2.3.4"  or  "::1"
+//   - IP+port:           "1.2.3.4:5000"  or  "[::1]:5000"
+//
+// When no port is present in advertise, the port is taken from listenAddr
+// (the server's TCP/UDP bind address, e.g. "0.0.0.0:1080").
+func resolveAdvertiseAddr(advertise, listenAddr string) (*net.UDPAddr, error) {
+	// Try parsing as host:port first.
+	host, port, err := net.SplitHostPort(advertise)
+	if err != nil {
+		// No port — treat the whole string as a bare IP/host.
+		host = advertise
+		port = ""
+	}
+
+	if port == "" {
+		// Fall back to the port from the listen address.
+		_, listenPort, err := net.SplitHostPort(listenAddr)
+		if err != nil {
+			return nil, fmt.Errorf("cannot determine port from listen address %q: %w", listenAddr, err)
+		}
+		port = listenPort
+	}
+
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return nil, fmt.Errorf("udp-advertise-addr %q is not a valid IP address", host)
+	}
+
+	return net.ResolveUDPAddr("udp", net.JoinHostPort(ip.String(), port))
 }
