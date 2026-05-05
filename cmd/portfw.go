@@ -354,7 +354,6 @@ func forwardPortUdp(netstackNet *netstack.Net, pm internal.PortMapping, isRemote
 		go udpRemoteForward(netstackNet, localAddrPort, remoteAddrPort.String())
 	} else {
 		// Local forwarding: Listen on local machine
-		//udpAddr, _ := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", pm.BindAddress, pm.LocalPort))
 		log.Printf("Local forwarding: Listening on %s:%d/udp, forwarding to remote %s:%d", pm.BindAddress, pm.LocalPort, pm.RemoteIP, pm.RemotePort)
 
 		go udpForward(netstackNet, localAddrPort.String(), remoteAddrPort.String())
@@ -362,21 +361,24 @@ func forwardPortUdp(netstackNet *netstack.Net, pm internal.PortMapping, isRemote
 	return nil
 }
 
+// udpForward listens for incoming UDP packets on a local address and
+// forwards them to a remote destination via the provided netstack instance.
+// It maintains sessions based on the client's source address.
 func udpForward(tunNet *netstack.Net, localAddr string, remoteAddr string) {
-	// 1. ホスト側のUDPポートをリッスン
+	// 1. Listen on the UDP port on the host side
 	pc, err := net.ListenPacket("udp", localAddr)
 	if err != nil {
 		log.Fatalf("Failed to listen on UDP: %v", err)
 	}
-	defer pc.Close()
+	defer func() { _ = pc.Close() }()
 
-	// セッション管理用マップ (送信元アドレス -> netstackのコネクション)
+	// Map for session management (Source address -> netstack connection)
 	sessions := make(map[string]net.Conn)
 	var mu sync.Mutex
 
 	buf := make([]byte, 1500)
 	for {
-		// 2. ホスト側でパケットを受信
+		// 2. Receive packet on the host side
 		n, clientAddr, err := pc.ReadFrom(buf)
 		if err != nil {
 			continue
@@ -385,7 +387,7 @@ func udpForward(tunNet *netstack.Net, localAddr string, remoteAddr string) {
 		mu.Lock()
 		remoteConn, exists := sessions[clientAddr.String()]
 		if !exists {
-			// 3. 初めての送信元なら、netstack経由で転送先への「コネクション」を作成
+			// 3. If it's a new source, create a connection to the destination via netstack
 			remoteConn, err = tunNet.DialContext(context.Background(), "udp", remoteAddr)
 			if err != nil {
 				log.Printf("Failed to dial remote: %v", err)
@@ -394,11 +396,11 @@ func udpForward(tunNet *netstack.Net, localAddr string, remoteAddr string) {
 			}
 			sessions[clientAddr.String()] = remoteConn
 
-			// 4. 転送先からの返信をクライアントに返すゴルーチンを開始
+			// 4. Start a goroutine to send replies from the destination back to the client
 			go func(cAddr net.Addr, rConn net.Conn) {
 				resBuf := make([]byte, 1500)
 				for {
-					// タイムアウトを設定しないとセッションが残り続けるため注意
+					// Note: Session will persist unless a timeout is set
 					rConn.SetReadDeadline(time.Now().Add(60 * time.Second))
 					rn, err := rConn.Read(resBuf)
 					if err != nil {
@@ -408,14 +410,14 @@ func udpForward(tunNet *netstack.Net, localAddr string, remoteAddr string) {
 						rConn.Close()
 						return
 					}
-					// クライアントへ返送
+					// Send back to the client
 					pc.WriteTo(resBuf[:rn], cAddr)
 				}
 			}(clientAddr, remoteConn)
 		}
 		mu.Unlock()
 
-		// 5. 転送先へパケットを送信
+		// 5. Forward the packet to the destination
 		_, err = remoteConn.Write(buf[:n])
 		if err != nil {
 			log.Printf("Failed to write to remote: %v", err)
@@ -423,21 +425,25 @@ func udpForward(tunNet *netstack.Net, localAddr string, remoteAddr string) {
 	}
 }
 
+// udpRemoteForward listens for UDP packets within the tunNet (tunnel network)
+// and forwards them to a target address on the host side.
+// It creates a reverse path to ensure replies from the target are routed
+// back to the original sender inside the tunnel.
 func udpRemoteForward(tunNet *netstack.Net, listenAddrPort netip.AddrPort, targetAddr string) {
-	// 1. WireGuardトンネル内のIPとポートでリッスン
+	// 1. Listen on the IP and port within the WireGuard tunnel
 	listener, err := tunNet.ListenUDPAddrPort(listenAddrPort)
 	if err != nil {
 		log.Fatalf("Tunnel listen failed: %v", err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
-	// セッション管理 (送信元 -> ホスト側へのUDPコネクション)
+	// Session management (Source -> UDP connection to the host side)
 	sessions := make(map[string]*net.UDPConn)
 	var mu sync.Mutex
 
 	buf := make([]byte, 1500)
 	for {
-		// 2. トンネル内からのパケットを受信
+		// 2. Receive packet (from) within the tunnel
 		n, remoteAddr, err := listener.ReadFrom(buf)
 		if err != nil {
 			log.Printf("Read error: %v", err)
@@ -447,9 +453,9 @@ func udpRemoteForward(tunNet *netstack.Net, listenAddrPort netip.AddrPort, targe
 		mu.Lock()
 		targetConn, exists := sessions[remoteAddr.String()]
 		if !exists {
-			// 3. 転送先（ホスト側など）のUDPアドレスを解決
+			// 3. Resolve the UDP address of the destination (e.g., host side)
 			raddr, _ := net.ResolveUDPAddr("udp", targetAddr)
-			// 転送先へ接続するソケットを作成
+			// Create a socket to connect to the destination
 			targetConn, err = net.DialUDP("udp", nil, raddr)
 			if err != nil {
 				log.Printf("Dial target failed: %v", err)
@@ -458,7 +464,7 @@ func udpRemoteForward(tunNet *netstack.Net, listenAddrPort netip.AddrPort, targe
 			}
 			sessions[remoteAddr.String()] = targetConn
 
-			// 4. 転送先からの返信をトンネル内に戻すゴルーチン
+			// 4. Goroutine to return replies from the destination back into the tunnel
 			go func(srcAddr net.Addr, tConn *net.UDPConn) {
 				defer func() {
 					mu.Lock()
@@ -469,19 +475,22 @@ func udpRemoteForward(tunNet *netstack.Net, listenAddrPort netip.AddrPort, targe
 
 				resBuf := make([]byte, 1500)
 				for {
-					tConn.SetReadDeadline(time.Now().Add(60 * time.Second))
+					err := tConn.SetReadDeadline(time.Now().Add(60 * time.Second))
+					if err != nil {
+						return
+					}
 					rn, _, err := tConn.ReadFrom(resBuf)
 					if err != nil {
 						return
 					}
-					// トンネル内の送信元へ返送
+					// Send back to the source within the tunnel
 					listener.WriteTo(resBuf[:rn], srcAddr)
 				}
 			}(remoteAddr, targetConn)
 		}
 		mu.Unlock()
 
-		// 5. 実際のデータを転送先に書き込む
+		// 5. Write the actual data to the destination
 		targetConn.Write(buf[:n])
 	}
 }
