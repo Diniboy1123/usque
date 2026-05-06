@@ -340,6 +340,20 @@ $ ./usque portfw -R 100.96.0.3:8080:localhost:8080 -L localhost:8081:100.96.0.2:
 > [!TIP]
 > Any number of ports are supported. You can chain many ports together if you specify the flag and the corresponding argument one after another.
 
+UDP ports are supported. You can enable UDP port forwarding if you specify the global protocol argument.
+
+```shell
+$ ./usque portfw -R 100.96.0.3:8080:localhost:8080 -L localhost:8081:100.96.0.2:8081 -u
+```
+or
+
+```shell
+$ ./usque portfw -R 100.96.0.3:8080:localhost:8080 -L localhost:8081:100.96.0.2:8081 --udp
+```
+
+> [!TIP]
+> It's a good ideal that you can specify UDP in the port field itself like 8888:127.0.0.1:8888/udp as same as jpillora/chisel. It's necessary to refactor PortMapping struct and maybe it's the next goal.
+
 ### Connect/Disconnect Hooks
 
 All tunnel modes can invoke an external executable after each successful tunnel connect and after each tunnel loss. This is useful for re-applying routes, firewall rules, or notifications without hard-coding them into the tool.
