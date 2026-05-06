@@ -344,7 +344,7 @@ func forwardPortUdp(netstackNet *netstack.Net, pm internal.PortMapping, isRemote
 	remoteAddrPort, err := netip.ParseAddrPort(fmt.Sprintf("%s:%d", pm.RemoteIP, pm.RemotePort))
 	if err != nil {
 		log.Printf("Invalid remote address: %v", err)
-		return fmt.Errorf("Invalid remote address: %w", err)
+		return fmt.Errorf("invalid remote address: %w", err)
 	}
 
 	if isRemote {
