@@ -398,20 +398,29 @@ func udpForward(tunNet *netstack.Net, localAddr string, remoteAddr string) {
 
 			// 4. Start a goroutine to send replies from the destination back to the client
 			go func(cAddr net.Addr, rConn net.Conn) {
+				defer func() {
+					mu.Lock()
+					delete(sessions, cAddr.String())
+					mu.Unlock()
+					_ = rConn.Close()
+				}()
+
 				resBuf := make([]byte, 1500)
 				for {
 					// Note: Session will persist unless a timeout is set
-					rConn.SetReadDeadline(time.Now().Add(60 * time.Second))
+					err := rConn.SetReadDeadline(time.Now().Add(60 * time.Second))
+					if err != nil {
+						return
+					}
 					rn, err := rConn.Read(resBuf)
 					if err != nil {
-						mu.Lock()
-						delete(sessions, cAddr.String())
-						mu.Unlock()
-						rConn.Close()
 						return
 					}
 					// Send back to the client
-					pc.WriteTo(resBuf[:rn], cAddr)
+					_, err = pc.WriteTo(resBuf[:rn], cAddr)
+					if err != nil {
+						return
+					}
 				}
 			}(clientAddr, remoteConn)
 		}
@@ -470,7 +479,7 @@ func udpRemoteForward(tunNet *netstack.Net, listenAddrPort netip.AddrPort, targe
 					mu.Lock()
 					delete(sessions, srcAddr.String())
 					mu.Unlock()
-					tConn.Close()
+					_ = tConn.Close()
 				}()
 
 				resBuf := make([]byte, 1500)
@@ -484,14 +493,20 @@ func udpRemoteForward(tunNet *netstack.Net, listenAddrPort netip.AddrPort, targe
 						return
 					}
 					// Send back to the source within the tunnel
-					listener.WriteTo(resBuf[:rn], srcAddr)
+					_, err = listener.WriteTo(resBuf[:rn], srcAddr)
+					if err != nil {
+						return
+					}
 				}
 			}(remoteAddr, targetConn)
 		}
 		mu.Unlock()
 
 		// 5. Write the actual data to the destination
-		targetConn.Write(buf[:n])
+		_, err = targetConn.Write(buf[:n])
+		if err != nil {
+			return
+		}
 	}
 }
 
