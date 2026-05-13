@@ -51,8 +51,13 @@ var accountInfoCmd = &cobra.Command{
 			cmd.Println("Organization:               ", account.Organization)
 		}
 
-		cmd.Println("Role:                       ", account.Role)
-		cmd.Println("Licence Key:                ", account.License)
+		if len(account.Role) > 0 {
+			cmd.Println("Role:                       ", account.Role)
+		}
+
+		if len(account.License) > 0 {
+			cmd.Println("Licence Key:                ", account.License)
+		}
 
 		if account.PremiumData > 0 {
 			cmd.Println("Premium Data:               ", account.PremiumData)
