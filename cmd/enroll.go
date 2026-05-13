@@ -54,6 +54,7 @@ var enrollCmd = &cobra.Command{
 			publicKey    []byte
 		)
 
+	retry:
 		if regenKey {
 			log.Printf("Regenerating key pair...")
 			privKeyBytes, publicKey, err = internal.GenerateEcKeyPair()
@@ -77,9 +78,9 @@ var enrollCmd = &cobra.Command{
 			}
 		}
 
-		updatedAccountData, apiErr, err := api.EnrollKey(accountData, publicKey, deviceName)
+		updatedAccountData, err := api.EnrollKey(accountData, publicKey, deviceName)
 		if err != nil {
-			if apiErr != nil && apiErr.HasErrorMessage(models.InvalidPublicKey) {
+			if apiErr, ok := err.(models.APIError); ok && apiErr.HasErrorCode(models.InvalidPublicKey) {
 				fmt.Print("Invalid public key detected. Regenerate key? (y/n): ")
 
 				var response string
@@ -88,31 +89,12 @@ var enrollCmd = &cobra.Command{
 				}
 
 				if response == "y" {
-					log.Printf("Regenerating key pair...")
-					privKeyBytes, publicKey, err = internal.GenerateEcKeyPair()
-					if err != nil {
-						log.Fatalf("Failed to generate key pair: %v", err)
-					}
-
-					log.Println("Re-enrolling device key with new key pair...")
-					updatedAccountData, apiErr, err = api.EnrollKey(accountData, publicKey, deviceName)
-					if err != nil {
-						if apiErr != nil {
-							log.Fatalf("Failed to enroll key: %v (API errors: %s)", err, apiErr.ErrorsAsString("; "))
-						}
-						log.Fatalf("Failed to enroll key: %v", err)
-					}
+					regenKey = true
+					goto retry
 				} else {
-					if apiErr != nil {
-						log.Fatalf("Enrollment aborted by user. API errors: %s", apiErr.ErrorsAsString("; "))
-					}
-					log.Fatal("Enrollment aborted by user.")
+					log.Fatalf("Enrollment aborted by user. %v", apiErr)
 				}
 			} else {
-				// apiErr is nil on transport errors etc. (#86).
-				if apiErr != nil {
-					log.Fatalf("Failed to enroll key: %v (API errors: %s)", err, apiErr.ErrorsAsString("; "))
-				}
 				log.Fatalf("Failed to enroll key: %v", err)
 			}
 		}

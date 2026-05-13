@@ -79,13 +79,9 @@ var registerCmd = &cobra.Command{
 
 		log.Printf("Enrolling device key...")
 
-		updatedAccountData, apiErr, err := api.EnrollKey(accountData, pubKey, deviceName)
+		updatedAccountData, err := api.EnrollKey(accountData, pubKey, deviceName)
 		if err != nil {
-			if apiErr != nil {
-				log.Fatalf("Failed to enroll key: %v (API errors: %s)", err, apiErr.ErrorsAsString("; "))
-			} else {
-				log.Fatalf("Failed to enroll key: %v", err)
-			}
+			log.Fatalf("Failed to enroll key: %v", err)
 		}
 
 		log.Printf("Successful registration. Saving config...")

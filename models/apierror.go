@@ -1,17 +1,13 @@
 package models
 
-// Known error messages from the API
+// Known error codes from the API
 const (
-	InvalidPublicKey = "Invalid public key"
+	InvalidPublicKey = 1001
 )
 
 type APIError struct {
-	// not sure what type this is, so we will settle for interface{}
-	// for now
-	Result   interface{} `json:"result"`
-	Success  bool        `json:"success"`
-	Errors   []ErrorInfo `json:"errors"`
-	Messages []string    `json:"messages"`
+	Success bool        `json:"success"`
+	Errors  []ErrorInfo `json:"errors"`
 }
 
 type ErrorInfo struct {
@@ -38,19 +34,27 @@ func (e *APIError) ErrorsAsString(separator string) string {
 	return result
 }
 
-// HasErrorMessage checks if the APIError contains a specific error message.
-// It returns true if the error message is found, otherwise false.
+// HasErrorCode checks if the APIError contains a specific error code.
+// It returns true if the error code is found, otherwise false.
 //
 // Parameters:
-//   - message: string - The error message to check for.
+//   - code: int - The error code to check for.
 //
 // Returns:
-//   - bool: true if the error message is found, otherwise false.
-func (e *APIError) HasErrorMessage(message string) bool {
+//   - bool: true if the error code is found, otherwise false.
+func (e *APIError) HasErrorCode(code int) bool {
 	for _, err := range e.Errors {
-		if err.Message == message {
+		if err.Code == code {
 			return true
 		}
 	}
 	return false
+}
+
+// Error returns a string representation of api errors.
+//
+// Returns:
+//   - string: A string containing all error messages, separated by '; '.
+func (e APIError) Error() string {
+	return "API errors: " + e.ErrorsAsString("; ")
 }
