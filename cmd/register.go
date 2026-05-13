@@ -79,7 +79,7 @@ var registerCmd = &cobra.Command{
 
 		log.Printf("Enrolling device key...")
 
-		updatedAccountData, err := api.EnrollKey(accountData, pubKey, deviceName)
+		updatedAccountData, err := api.EnrollKey(accountData.ID, accountData.Token, pubKey, deviceName)
 		if err != nil {
 			log.Fatalf("Failed to enroll key: %v", err)
 		}
@@ -96,7 +96,6 @@ var registerCmd = &cobra.Command{
 			EndpointH2V4:   config.DefaultEndpointH2V4,
 			EndpointH2V6:   config.DefaultEndpointH2V6,
 			EndpointPubKey: updatedAccountData.Config.Peers[0].PublicKey,
-			License:        updatedAccountData.Account.License,
 			ID:             updatedAccountData.ID,
 			AccessToken:    accountData.Token,
 			IPv4:           updatedAccountData.Config.Interface.Addresses.V4,

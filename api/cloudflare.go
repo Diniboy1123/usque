@@ -34,24 +34,24 @@ import (
 //	if err != nil {
 //	    log.Fatalf("Registration failed: %v", err)
 //	}
-func Register(model, locale, jwt string, acceptTos bool) (models.AccountData, error) {
+func Register(model, locale, jwt string, acceptTos bool) (*models.AccountData, error) {
 	wgKey, err := internal.GenerateRandomWgPubkey()
 	if err != nil {
-		return models.AccountData{}, fmt.Errorf("failed to generate wg key: %v", err)
+		return nil, fmt.Errorf("failed to generate wg key: %v", err)
 	}
 	serial, err := internal.GenerateRandomAndroidSerial()
 	if err != nil {
-		return models.AccountData{}, fmt.Errorf("failed to generate serial: %v", err)
+		return nil, fmt.Errorf("failed to generate serial: %v", err)
 	}
 
 	if !acceptTos {
 		fmt.Print("You must accept the Terms of Service (https://www.cloudflare.com/application/terms/) to register. Do you agree? (y/n): ")
 		var response string
 		if _, err := fmt.Scanln(&response); err != nil {
-			return models.AccountData{}, fmt.Errorf("failed to read user input: %v", err)
+			return nil, fmt.Errorf("failed to read user input: %v", err)
 		}
 		if response != "y" {
-			return models.AccountData{}, fmt.Errorf("user did not accept TOS")
+			return nil, fmt.Errorf("user did not accept TOS")
 		}
 	}
 
@@ -70,12 +70,12 @@ func Register(model, locale, jwt string, acceptTos bool) (models.AccountData, er
 
 	jsonData, err := json.Marshal(data)
 	if err != nil {
-		return models.AccountData{}, fmt.Errorf("failed to marshal json: %v", err)
+		return nil, fmt.Errorf("failed to marshal json: %v", err)
 	}
 
 	req, err := http.NewRequest("POST", internal.ApiUrl+"/"+internal.ApiVersion+"/reg", bytes.NewBuffer(jsonData))
 	if err != nil {
-		return models.AccountData{}, fmt.Errorf("failed to create request: %v", err)
+		return nil, fmt.Errorf("failed to create request: %v", err)
 	}
 
 	for k, v := range internal.Headers {
@@ -88,20 +88,29 @@ func Register(model, locale, jwt string, acceptTos bool) (models.AccountData, er
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return models.AccountData{}, fmt.Errorf("failed to send request: %v", err)
+		return nil, fmt.Errorf("failed to send request: %v", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %v", err)
+	}
+
 	if resp.StatusCode != http.StatusOK {
-		return models.AccountData{}, fmt.Errorf("failed to register: %v", resp.Status)
+		var apiErr models.APIError
+		if err := json.Unmarshal(body, &apiErr); err != nil {
+			return nil, fmt.Errorf("failed to parse error response: %v", err)
+		}
+		return nil, &apiErr
 	}
 
 	var accountData models.AccountData
-	if err := json.NewDecoder(resp.Body).Decode(&accountData); err != nil {
-		return models.AccountData{}, fmt.Errorf("failed to decode response: %v", err)
+	if err := json.Unmarshal(body, &accountData); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %v", err)
 	}
 
-	return accountData, nil
+	return &accountData, nil
 }
 
 // EnrollKey updates an existing user account with a new MASQUE public key.
@@ -109,21 +118,22 @@ func Register(model, locale, jwt string, acceptTos bool) (models.AccountData, er
 // This function sends a PATCH request to update the user's account with a new key.
 //
 // Parameters:
-//   - accountData: models.AccountData - The account data of the user being updated.
-//   - pubKey: []byte - The new MASQUE public key in binary format.
-//   - deviceName: string - The name of the device to enroll. (optional)
+//   - deviceId: string - The device registration ID
+//   - deviceToken: string - The device registration access token
+//   - pubKey: []byte - The new MASQUE public key in binary format
+//   - deviceName: string - The name of the device to enroll (optional)
 //
 // Returns:
-//   - models.AccountData: The updated account data.
-//   - error:              An error if the update process fails.
+//   - *models.AccountData: The updated account data after key enrollment
+//   - error:              An error if the enrollment process fails
 //
 // Example:
 //
-//	updatedAccount, apiErr, err := EnrollKey(account, pubKey, "PC")
+//	updatedAccount, err := EnrollKey(deviceId, accessToken, pubKey, "MyPC")
 //	if err != nil {
 //	    log.Fatalf("Key enrollment failed: %v", err)
 //	}
-func EnrollKey(accountData models.AccountData, pubKey []byte, deviceName string) (models.AccountData, error) {
+func EnrollKey(deviceId string, deviceToken string, pubKey []byte, deviceName string) (*models.AccountData, error) {
 	deviceUpdate := models.DeviceUpdate{
 		Key:     base64.StdEncoding.EncodeToString(pubKey),
 		KeyType: internal.KeyTypeMasque,
@@ -136,41 +146,232 @@ func EnrollKey(accountData models.AccountData, pubKey []byte, deviceName string)
 
 	jsonData, err := json.Marshal(deviceUpdate)
 	if err != nil {
-		return models.AccountData{}, fmt.Errorf("failed to marshal json: %v", err)
+		return nil, fmt.Errorf("failed to marshal json: %v", err)
 	}
 
-	req, err := http.NewRequest("PATCH", internal.ApiUrl+"/"+internal.ApiVersion+"/reg/"+accountData.ID, bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest("PATCH", internal.ApiUrl+"/"+internal.ApiVersion+"/reg/"+deviceId, bytes.NewBuffer(jsonData))
 	if err != nil {
-		return models.AccountData{}, fmt.Errorf("failed to create request: %v", err)
+		return nil, fmt.Errorf("failed to create request: %v", err)
 	}
 
 	for k, v := range internal.Headers {
 		req.Header.Set(k, v)
 	}
-	req.Header.Set("Authorization", "Bearer "+accountData.Token)
+	req.Header.Set("Authorization", "Bearer "+deviceToken)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return models.AccountData{}, fmt.Errorf("failed to send request: %v", err)
+		return nil, fmt.Errorf("failed to send request: %v", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return models.AccountData{}, fmt.Errorf("failed to read response body: %v", err)
+		return nil, fmt.Errorf("failed to read response body: %v", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		var apiErr models.APIError
 		if err := json.Unmarshal(body, &apiErr); err != nil {
-			return models.AccountData{}, fmt.Errorf("failed to parse error response: %v", err)
+			return nil, fmt.Errorf("failed to parse error response: %v", err)
 		}
-		return models.AccountData{}, &apiErr
+		return nil, &apiErr
 	}
 
+	var accountData models.AccountData
 	if err := json.Unmarshal(body, &accountData); err != nil {
-		return models.AccountData{}, fmt.Errorf("failed to decode response: %v", err)
+		return nil, fmt.Errorf("failed to decode response: %v", err)
 	}
 
-	return accountData, nil
+	return &accountData, nil
+}
+
+// GetAccount retrieves the account information associated with the device.
+//
+// This function sends a GET request to retrieve account details including license key status,
+// account type, and other account-related information.
+//
+// Parameters:
+//   - deviceId: string - The device registration ID
+//   - deviceToken: string - The device registration access token
+//
+// Returns:
+//   - *models.Account: The account information including license key and account status
+//   - error:           An error if the request fails or account is not found
+func GetAccount(deviceId string, deviceToken string) (*models.Account, error) {
+	req, err := http.NewRequest(http.MethodGet, internal.ApiUrl+"/"+internal.ApiVersion+"/reg/"+deviceId+"/account", nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %v", err)
+	}
+
+	for k, v := range internal.Headers {
+		req.Header.Set(k, v)
+	}
+	req.Header.Set("Authorization", "Bearer "+deviceToken)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		var apiErr models.APIError
+		if err := json.Unmarshal(body, &apiErr); err != nil {
+			return nil, fmt.Errorf("failed to parse error response: %v", err)
+		}
+		return nil, &apiErr
+	}
+
+	var respData models.Account
+	if err := json.Unmarshal(body, &respData); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %v", err)
+	}
+
+	return &respData, nil
+}
+
+// UpdateLicenceKey updates the license key associated with a device.
+//
+// This function sends a PUT request to bind a new license key to the current device.
+// The device will be associated with the WARP account linked to the provided license key.
+//
+// Parameters:
+//   - deviceId: string - The device registration ID
+//   - deviceToken: string - The device registration access token
+//   - licenceKey: string - The new license key to bind to the device
+//
+// Returns:
+//   - error: An error if the update fails or the license key is invalid
+func UpdateLicenceKey(deviceId string, deviceToken string, licenceKey string) error {
+	deviceUpdate := models.Account{
+		License: licenceKey,
+	}
+
+	jsonData, err := json.Marshal(deviceUpdate)
+	if err != nil {
+		return fmt.Errorf("failed to marshal json: %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPut, internal.ApiUrl+"/"+internal.ApiVersion+"/reg/"+deviceId+"/account", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %v", err)
+	}
+
+	for k, v := range internal.Headers {
+		req.Header.Set(k, v)
+	}
+	req.Header.Set("Authorization", "Bearer "+deviceToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		var apiErr models.APIError
+		if err := json.NewDecoder(resp.Body).Decode(&apiErr); err != nil {
+			return fmt.Errorf("failed to parse error response: %v", err)
+		}
+		return &apiErr
+	}
+
+	return nil
+}
+
+// DeleteLicenceKey removes the license key associated with the device.
+//
+// This function sends a DELETE request to unbind the license key from the current device.
+// After removal, the device will no longer have WARP connectivity and the license key
+// can be used on a different device.
+//
+// Parameters:
+//   - deviceId: string - The device registration ID
+//   - deviceToken: string - The device registration access token
+//
+// Returns:
+//   - error: An error if the removal fails
+func DeleteLicenceKey(deviceId string, deviceToken string) error {
+	req, err := http.NewRequest(http.MethodDelete, internal.ApiUrl+"/"+internal.ApiVersion+"/reg/"+deviceId+"/account", nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %v", err)
+	}
+
+	for k, v := range internal.Headers {
+		req.Header.Set(k, v)
+	}
+	req.Header.Set("Authorization", "Bearer "+deviceToken)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		var apiErr models.APIError
+		if err := json.NewDecoder(resp.Body).Decode(&apiErr); err != nil {
+			return fmt.Errorf("failed to parse error response: %v", err)
+		}
+		return &apiErr
+	}
+
+	return nil
+}
+
+// GetDevices retrieves a list of all devices associated with the same license key.
+//
+// This function sends a GET request to retrieve information about all devices that share
+// the same license key binding as the current device.
+//
+// Parameters:
+//   - deviceId: string - The device registration ID
+//   - deviceToken: string - The device registration access token
+//
+// Returns:
+//   - *models.Devices: A list of devices associated with the license key
+//   - error:           An error if the request fails
+func GetDevices(deviceId string, deviceToken string) (*models.Devices, error) {
+	req, err := http.NewRequest(http.MethodGet, internal.ApiUrl+"/"+internal.ApiVersion+"/reg/"+deviceId+"/account/devices", nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %v", err)
+	}
+
+	for k, v := range internal.Headers {
+		req.Header.Set(k, v)
+	}
+	req.Header.Set("Authorization", "Bearer "+deviceToken)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		var apiErr models.APIError
+		if err := json.Unmarshal(body, &apiErr); err != nil {
+			return nil, fmt.Errorf("failed to parse error response: %v", err)
+		}
+		return nil, &apiErr
+	}
+
+	var respData models.Devices
+	if err := json.Unmarshal(body, &respData); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %v", err)
+	}
+
+	return &respData, nil
 }

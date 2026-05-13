@@ -47,7 +47,7 @@ type AccountData struct {
 
 type Account struct {
 	ID          string `json:"id"`
-	AccountType string `json:"account_type"`
+	AccountType string `json:"account_type,omitempty"`
 	// Created not set for ZeroTier
 	Created string `json:"created,omitempty"`
 	// Updated not set for ZeroTier
@@ -99,4 +99,17 @@ type Peer struct {
 type Policy struct {
 	TunnelProtocol string `json:"tunnel_protocol"`
 	// TODO: add ZeroTier fields
+}
+
+type Devices []Device
+
+type Device struct {
+	ID        string `json:"id"`
+	Type      string `json:"type"`
+	Model     string `json:"model"`
+	Name      string `json:"name,omitempty"`
+	Created   string `json:"created"`
+	Activated string `json:"activated"`
+	Active    bool   `json:"active"`
+	Role      string `json:"role"`
 }
