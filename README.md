@@ -276,6 +276,16 @@ Test the proxy with `curl`:
 curl -x socks5://myuser:mypass@localhost:8080 https://cloudflare.com/cdn-cgi/trace
 ```
 
+Some SOCKS5 clients request UDP ASSOCIATE with an unspecified source address
+(`0.0.0.0:0` or `[::]:0`) and then send UDP from a different source port. If
+UDP works with other clients but those clients trigger `udp address ... is not
+associated with tcp`, start the proxy with `--loose-udp-associate` to bind the
+association to the first UDP packet from the same client IP:
+
+```shell
+$ ./usque socks --loose-udp-associate
+```
+
 > [!NOTE]
 > Since the proxy emulates its own networking stack, it's generally safe to say that users won't be able to access internal IPs and services the host has access to using the proxy. However the internal WARP network is available for them unfiltered. If you have ZeroTrust and Gateway on, users of your proxy may be able to reach each other as no manual filtering is applied. **Inside the tunnel they will be able to connect to any TCP or UDP service**.
 

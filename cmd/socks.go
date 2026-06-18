@@ -217,6 +217,12 @@ var socksCmd = &cobra.Command{
 			log.Println("Warning: --udp-timeout is 0; idle UDP ASSOCIATE exchanges will never expire. Memory will grow under heavy UDP traffic (DHT, uTP, etc.).")
 		}
 
+		looseUDPAssociate, err := cmd.Flags().GetBool("loose-udp-associate")
+		if err != nil {
+			cmd.Printf("Failed to get loose UDP ASSOCIATE flag: %v\n", err)
+			return
+		}
+
 		alwaysReconnect, err := cmd.Flags().GetBool("always-reconnect")
 		if err != nil {
 			cmd.Printf("Failed to get always-reconnect flag: %v\n", err)
@@ -273,13 +279,14 @@ var socksCmd = &cobra.Command{
 		}
 
 		server, err := internal.NewSOCKS5Server(internal.SOCKS5Config{
-			Addr:       net.JoinHostPort(bindAddress, port),
-			Username:   username,
-			Password:   password,
-			Resolver:   resolver,
-			TunNet:     tunNet,
-			UDPTimeout: udpTimeout,
-			Logger:     log.New(internal.NewTZStampWriter(os.Stderr), "socks5: ", 0),
+			Addr:              net.JoinHostPort(bindAddress, port),
+			Username:          username,
+			Password:          password,
+			Resolver:          resolver,
+			TunNet:            tunNet,
+			UDPTimeout:        udpTimeout,
+			LooseUDPAssociate: looseUDPAssociate,
+			Logger:            log.New(internal.NewTZStampWriter(os.Stderr), "socks5: ", 0),
 		})
 		if err != nil {
 			cmd.Printf("Failed to create SOCKS proxy: %v\n", err)
@@ -311,6 +318,7 @@ func init() {
 	socksCmd.Flags().Uint16P("initial-packet-size", "i", 0, "Custom initial packet size for MASQUE connection (default: auto with PMTU discovery)")
 	socksCmd.Flags().DurationP("reconnect-delay", "r", 1*time.Second, "Delay between reconnect attempts")
 	socksCmd.Flags().Duration("udp-timeout", 60*time.Second, "Idle read deadline for each remote UDP relay (SOCKS5 ASSOCIATE). Shorter frees memory sooner; raise (e.g. 300s) if a quiet peer needs longer silence. 0 disables the deadline and risks unbounded growth under DHT/uTP")
+	socksCmd.Flags().Bool("loose-udp-associate", false, "Accept the first UDP source port from clients that request UDP ASSOCIATE with 0.0.0.0:0 or [::]:0")
 	socksCmd.Flags().Bool("always-reconnect", false, "Always reconnect after tunnel loss, even when idle")
 	socksCmd.Flags().Bool("http2", false, "Use HTTP/2 over TCP+TLS instead of HTTP/3 over QUIC."+config.EndpointHelpSuffixH2)
 	socksCmd.Flags().Bool("insecure", false, "Disable endpoint certificate pinning and trust any certificate")
