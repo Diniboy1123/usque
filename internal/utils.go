@@ -130,6 +130,7 @@ func DefaultQuicConfig(keepalivePeriod time.Duration, initialPacketSize uint16) 
 	cfg := &quic.Config{
 		EnableDatagrams: true,
 		KeepAlivePeriod: keepalivePeriod,
+		Congestion: func() quic.SendAlgorithmWithDebugInfos{return quic.NewBBRv1(&quic.Config{})},
 	}
 
 	if initialPacketSize > 0 {

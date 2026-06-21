@@ -32,3 +32,5 @@ require (
 	golang.org/x/time v0.15.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 )
+
+replace github.com/quic-go/quic-go => github.com/qiulaidongfeng/quic-go v0.0.0-20260415070321-cccaf9aa4529
