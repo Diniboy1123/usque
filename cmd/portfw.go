@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"sync"
 	"time"
 
 	"github.com/Diniboy1123/usque/api"
@@ -236,6 +237,12 @@ var portFwCmd = &cobra.Command{
 			return
 		}
 
+		udp, err := cmd.Flags().GetBool("udp")
+		if err != nil {
+			cmd.Printf("Failed to get udp flag: %v\n", err)
+			return
+		}
+
 		hookEnv := map[string]string{
 			"USQUE_MODE": "portfw",
 			"USQUE_IPV4": config.AppConfig.IPv4,
@@ -269,7 +276,12 @@ var portFwCmd = &cobra.Command{
 		// Start Local Port Forwarding (-L)
 		for _, pm := range localPortMappings {
 			go func(pm internal.PortMapping) {
-				err := forwardPort(tunNet, pm, false) // false = local forwarding
+				var err error
+				if udp {
+					err = forwardPortUdp(tunNet, pm, false) // false = local forwarding
+				} else {
+					err = forwardPort(tunNet, pm, false) // false = local forwarding
+				}
 				if err != nil {
 					cmd.Printf("Error in local forwarding %d: %v\n", pm.LocalPort, err)
 				}
@@ -279,7 +291,12 @@ var portFwCmd = &cobra.Command{
 		// Start Remote Port Forwarding (-R)
 		for _, pm := range remotePortMappings {
 			go func(pm internal.PortMapping) {
-				err := forwardPort(tunNet, pm, true) // true = remote forwarding
+				var err error
+				if udp {
+					err = forwardPortUdp(tunNet, pm, true) // true = remote forwarding
+				} else {
+					err = forwardPort(tunNet, pm, true) // true = remote forwarding
+				}
 				if err != nil {
 					cmd.Printf("Error in remote forwarding %d: %v\n", pm.LocalPort, err)
 				}
@@ -307,6 +324,190 @@ var portFwCmd = &cobra.Command{
 
 		select {}
 	},
+}
+
+// forwardPortUdp sets up a local or remote udp port forwarding using either the MASQUE tunnel or the local network.
+//
+// Parameters:
+//   - netstackNet: *netstack.Net - The network stack used for handling remote forwarding.
+//   - pm: internal.PortMapping - The port mapping configuration containing bind address, local port, remote IP, and remote port.
+//   - isRemote: bool - Indicates whether the forwarding is remote (true) or local (false).
+//
+// Returns:
+//   - error: An error if port forwarding fails; otherwise, nil.
+func forwardPortUdp(netstackNet *netstack.Net, pm internal.PortMapping, isRemote bool) error {
+	localAddrPort, err := netip.ParseAddrPort(fmt.Sprintf("%s:%d", pm.BindAddress, pm.LocalPort))
+	if err != nil {
+		return fmt.Errorf("invalid local address: %w", err)
+	}
+
+	remoteAddrPort, err := netip.ParseAddrPort(fmt.Sprintf("%s:%d", pm.RemoteIP, pm.RemotePort))
+	if err != nil {
+		log.Printf("Invalid remote address: %v", err)
+		return fmt.Errorf("invalid remote address: %w", err)
+	}
+
+	if isRemote {
+		// Remote forwarding: Listen inside the MASQUE tunnel
+		log.Printf("Remote forwarding: Listening on MASQUE network %s/udp, forwarding to local %s:%d", localAddrPort, pm.RemoteIP, pm.RemotePort)
+
+		go udpRemoteForward(netstackNet, localAddrPort, remoteAddrPort.String())
+	} else {
+		// Local forwarding: Listen on local machine
+		log.Printf("Local forwarding: Listening on %s:%d/udp, forwarding to remote %s:%d", pm.BindAddress, pm.LocalPort, pm.RemoteIP, pm.RemotePort)
+
+		go udpForward(netstackNet, localAddrPort.String(), remoteAddrPort.String())
+	}
+	return nil
+}
+
+// udpForward listens for incoming UDP packets on a local address and
+// forwards them to a remote destination via the provided netstack instance.
+// It maintains sessions based on the client's source address.
+func udpForward(tunNet *netstack.Net, localAddr string, remoteAddr string) {
+	// 1. Listen on the UDP port on the host side
+	pc, err := net.ListenPacket("udp", localAddr)
+	if err != nil {
+		log.Fatalf("Failed to listen on UDP: %v", err)
+	}
+	defer func() { _ = pc.Close() }()
+
+	// Map for session management (Source address -> netstack connection)
+	sessions := make(map[string]net.Conn)
+	var mu sync.Mutex
+
+	buf := make([]byte, 1500)
+	for {
+		// 2. Receive packet on the host side
+		n, clientAddr, err := pc.ReadFrom(buf)
+		if err != nil {
+			continue
+		}
+
+		mu.Lock()
+		remoteConn, exists := sessions[clientAddr.String()]
+		if !exists {
+			// 3. If it's a new source, create a connection to the destination via netstack
+			remoteConn, err = tunNet.DialContext(context.Background(), "udp", remoteAddr)
+			if err != nil {
+				log.Printf("Failed to dial remote: %v", err)
+				mu.Unlock()
+				continue
+			}
+			sessions[clientAddr.String()] = remoteConn
+
+			// 4. Start a goroutine to send replies from the destination back to the client
+			go func(cAddr net.Addr, rConn net.Conn) {
+				defer func() {
+					mu.Lock()
+					delete(sessions, cAddr.String())
+					mu.Unlock()
+					_ = rConn.Close()
+				}()
+
+				resBuf := make([]byte, 1500)
+				for {
+					// Note: Session will persist unless a timeout is set
+					err := rConn.SetReadDeadline(time.Now().Add(60 * time.Second))
+					if err != nil {
+						return
+					}
+					rn, err := rConn.Read(resBuf)
+					if err != nil {
+						return
+					}
+					// Send back to the client
+					_, err = pc.WriteTo(resBuf[:rn], cAddr)
+					if err != nil {
+						return
+					}
+				}
+			}(clientAddr, remoteConn)
+		}
+		mu.Unlock()
+
+		// 5. Forward the packet to the destination
+		_, err = remoteConn.Write(buf[:n])
+		if err != nil {
+			log.Printf("Failed to write to remote: %v", err)
+		}
+	}
+}
+
+// udpRemoteForward listens for UDP packets within the tunNet (tunnel network)
+// and forwards them to a target address on the host side.
+// It creates a reverse path to ensure replies from the target are routed
+// back to the original sender inside the tunnel.
+func udpRemoteForward(tunNet *netstack.Net, listenAddrPort netip.AddrPort, targetAddr string) {
+	// 1. Listen on the IP and port within the WireGuard tunnel
+	listener, err := tunNet.ListenUDPAddrPort(listenAddrPort)
+	if err != nil {
+		log.Fatalf("Tunnel listen failed: %v", err)
+	}
+	defer func() { _ = listener.Close() }()
+
+	// Session management (Source -> UDP connection to the host side)
+	sessions := make(map[string]*net.UDPConn)
+	var mu sync.Mutex
+
+	buf := make([]byte, 1500)
+	for {
+		// 2. Receive packet (from) within the tunnel
+		n, remoteAddr, err := listener.ReadFrom(buf)
+		if err != nil {
+			log.Printf("Read error: %v", err)
+			continue
+		}
+
+		mu.Lock()
+		targetConn, exists := sessions[remoteAddr.String()]
+		if !exists {
+			// 3. Resolve the UDP address of the destination (e.g., host side)
+			raddr, _ := net.ResolveUDPAddr("udp", targetAddr)
+			// Create a socket to connect to the destination
+			targetConn, err = net.DialUDP("udp", nil, raddr)
+			if err != nil {
+				log.Printf("Dial target failed: %v", err)
+				mu.Unlock()
+				continue
+			}
+			sessions[remoteAddr.String()] = targetConn
+
+			// 4. Goroutine to return replies from the destination back into the tunnel
+			go func(srcAddr net.Addr, tConn *net.UDPConn) {
+				defer func() {
+					mu.Lock()
+					delete(sessions, srcAddr.String())
+					mu.Unlock()
+					_ = tConn.Close()
+				}()
+
+				resBuf := make([]byte, 1500)
+				for {
+					err := tConn.SetReadDeadline(time.Now().Add(60 * time.Second))
+					if err != nil {
+						return
+					}
+					rn, _, err := tConn.ReadFrom(resBuf)
+					if err != nil {
+						return
+					}
+					// Send back to the source within the tunnel
+					_, err = listener.WriteTo(resBuf[:rn], srcAddr)
+					if err != nil {
+						return
+					}
+				}
+			}(remoteAddr, targetConn)
+		}
+		mu.Unlock()
+
+		// 5. Write the actual data to the destination
+		_, err = targetConn.Write(buf[:n])
+		if err != nil {
+			return
+		}
+	}
 }
 
 // forwardPort sets up a local or remote port forwarding using either the MASQUE tunnel or the local network.
@@ -419,5 +620,6 @@ func init() {
 	portFwCmd.Flags().Bool("dont-always-reconnect", false, "Disable always reconnect in portfw; reconnect only when new activity arrives")
 	portFwCmd.Flags().String("on-connect", "", "Path to an executable to run after each successful tunnel connect (no args; context via USQUE_* env vars)")
 	portFwCmd.Flags().String("on-disconnect", "", "Path to an executable to run after each tunnel disconnect (no args; context via USQUE_* env vars)")
+	portFwCmd.Flags().BoolP("udp", "u", false, "Global protocol type for port mappings")
 	rootCmd.AddCommand(portFwCmd)
 }
