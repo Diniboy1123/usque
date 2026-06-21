@@ -32,8 +32,28 @@ type SOCKS5Config struct {
 
 // SOCKS5Server wraps txthinking/socks5; DialTCP/DialUDP are package globals (last NewSOCKS5Server wins).
 type SOCKS5Server struct {
-	cfg    SOCKS5Config
-	server *socks5.Server
+	cfg                 SOCKS5Config
+	server              *socks5.Server
+	udpAssociationMutex sync.Mutex
+	pendingUDP          map[string][]*udpAssociation
+}
+
+type udpAssociation struct {
+	mu     sync.Mutex
+	ch     chan byte
+	source string
+}
+
+func (a *udpAssociation) setSource(source string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.source = source
+}
+
+func (a *udpAssociation) getSource() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.source
 }
 
 func NewSOCKS5Server(cfg SOCKS5Config) (*SOCKS5Server, error) {
@@ -62,7 +82,11 @@ func NewSOCKS5Server(cfg SOCKS5Config) (*SOCKS5Server, error) {
 		return nil, err
 	}
 
-	s := &SOCKS5Server{cfg: cfg, server: srv}
+	s := &SOCKS5Server{
+		cfg:        cfg,
+		server:     srv,
+		pendingUDP: make(map[string][]*udpAssociation),
+	}
 	if cfg.TCPOnly {
 		srv.SupportedCommands = []byte{socks5.CmdConnect}
 	}
@@ -312,10 +336,22 @@ func (s *SOCKS5Server) TCPHandle(srv *socks5.Server, c *net.TCPConn, r *socks5.R
 		if err != nil {
 			return err
 		}
-		ch := make(chan byte)
-		defer close(ch)
-		srv.AssociatedUDP.Set(caddr.String(), ch, -1)
-		defer srv.AssociatedUDP.Delete(caddr.String())
+		assoc := &udpAssociation{ch: make(chan byte)}
+		defer close(assoc.ch)
+		if isZeroUDPAssociateRequest(r) {
+			sourceIP := socksClientIP(c.RemoteAddr())
+			s.addPendingUDPAssociation(sourceIP, assoc)
+			defer func() {
+				s.removePendingUDPAssociation(sourceIP, assoc)
+				if source := assoc.getSource(); source != "" {
+					srv.AssociatedUDP.Delete(source)
+				}
+			}()
+		} else {
+			assoc.setSource(caddr.String())
+			srv.AssociatedUDP.Set(assoc.getSource(), assoc, -1)
+			defer srv.AssociatedUDP.Delete(assoc.getSource())
+		}
 		_, _ = io.Copy(io.Discard, c)
 		return nil
 	}
@@ -363,17 +399,28 @@ func (s *SOCKS5Server) relayTCP(a, b net.Conn, timeout time.Duration) {
 // UDPHandle is like txthinking DefaultHandle.UDPHandle but does not use srv.UDPSrc.
 func (s *SOCKS5Server) UDPHandle(srv *socks5.Server, addr *net.UDPAddr, d *socks5.Datagram) error {
 	src := addr.String()
-	var ch chan byte
+	var associatedClosed <-chan byte
 	if srv.LimitUDP {
 		any, ok := srv.AssociatedUDP.Get(src)
 		if !ok {
-			return fmt.Errorf("udp address %s is not associated with tcp", src)
+			assoc, claimed := s.claimPendingUDPAssociation(addr)
+			if !claimed {
+				return fmt.Errorf("udp address %s is not associated with tcp", src)
+			}
+			assoc.setSource(src)
+			srv.AssociatedUDP.Set(src, assoc, -1)
+			associatedClosed = assoc.ch
+		} else {
+			assoc, ok := any.(*udpAssociation)
+			if !ok {
+				return fmt.Errorf("udp address %s has invalid association state", src)
+			}
+			associatedClosed = assoc.ch
 		}
-		ch = any.(chan byte)
 	}
 	send := func(ue *socks5.UDPExchange, data []byte) error {
 		select {
-		case <-ch:
+		case <-associatedClosed:
 			return fmt.Errorf("udp address %s is not associated with tcp", src)
 		default:
 			_, err := ue.RemoteConn.Write(data)
@@ -421,7 +468,7 @@ func (s *SOCKS5Server) UDPHandle(srv *socks5.Server, addr *net.UDPAddr, d *socks
 		defer udpReadBufPool.Put(rbp)
 		for {
 			select {
-			case <-ch:
+			case <-associatedClosed:
 				return
 			default:
 				// Use full time.Duration (NewClassicServer only gets whole seconds).
@@ -464,4 +511,78 @@ func (s *SOCKS5Server) UDPHandle(srv *socks5.Server, addr *net.UDPAddr, d *socks
 	}(ue, dst)
 
 	return nil
+}
+
+func isZeroUDPAssociateRequest(r *socks5.Request) bool {
+	if len(r.DstPort) != 2 || r.DstPort[0] != 0 || r.DstPort[1] != 0 {
+		return false
+	}
+	switch r.Atyp {
+	case socks5.ATYPIPv4, socks5.ATYPIPv6:
+		return net.IP(r.DstAddr).IsUnspecified()
+	default:
+		return false
+	}
+}
+
+func socksClientIP(addr net.Addr) string {
+	switch typedAddr := addr.(type) {
+	case *net.TCPAddr:
+		return typedAddr.IP.String()
+	case *net.UDPAddr:
+		return typedAddr.IP.String()
+	default:
+		host, _, err := net.SplitHostPort(addr.String())
+		if err != nil {
+			return addr.String()
+		}
+		return host
+	}
+}
+
+func (s *SOCKS5Server) addPendingUDPAssociation(sourceIP string, assoc *udpAssociation) {
+	s.udpAssociationMutex.Lock()
+	defer s.udpAssociationMutex.Unlock()
+	s.pendingUDP[sourceIP] = append(s.pendingUDP[sourceIP], assoc)
+}
+
+func (s *SOCKS5Server) removePendingUDPAssociation(sourceIP string, assoc *udpAssociation) {
+	s.udpAssociationMutex.Lock()
+	defer s.udpAssociationMutex.Unlock()
+	pending := s.pendingUDP[sourceIP]
+	for index, current := range pending {
+		if current == assoc {
+			pending = append(pending[:index], pending[index+1:]...)
+			break
+		}
+	}
+	if len(pending) == 0 {
+		delete(s.pendingUDP, sourceIP)
+		return
+	}
+	s.pendingUDP[sourceIP] = pending
+}
+
+func (s *SOCKS5Server) claimPendingUDPAssociation(addr *net.UDPAddr) (*udpAssociation, bool) {
+	sourceIP := addr.IP.String()
+	s.udpAssociationMutex.Lock()
+	defer s.udpAssociationMutex.Unlock()
+	pending := s.pendingUDP[sourceIP]
+	for len(pending) > 0 {
+		assoc := pending[0]
+		pending = pending[1:]
+		select {
+		case <-assoc.ch:
+			continue
+		default:
+			if len(pending) == 0 {
+				delete(s.pendingUDP, sourceIP)
+			} else {
+				s.pendingUDP[sourceIP] = pending
+			}
+			return assoc, true
+		}
+	}
+	delete(s.pendingUDP, sourceIP)
+	return nil, false
 }
