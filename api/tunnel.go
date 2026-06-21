@@ -307,7 +307,31 @@ func MaintainTunnel(ctx context.Context, cfg MaintainTunnelConfig) {
 		var wg sync.WaitGroup
 		var readMu sync.Mutex
 
-		wg.Add(2)
+		// icmpChan hands ICMP replies produced by ipConn.WritePacket (e.g.
+		// "datagram too large" responses) to a dedicated injector goroutine.
+		// They must not be written back to the device from the device-reader
+		// goroutine itself: on the netstack device, injecting an ICMP error can
+		// synchronously trigger a retransmission, whose egress blocks on the
+		// device's unbuffered packet channel until the device is read again --
+		// deadlocking the reader goroutine permanently. ICMP is lossy by
+		// nature, so the channel is bounded and overflow is dropped.
+		icmpChan := make(chan []byte, 32)
+
+		wg.Add(3)
+
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-pumpCtx.Done():
+					return
+				case pkt := <-icmpChan:
+					if err := cfg.Device.WritePacket(pkt); err != nil {
+						log.Printf("Error writing ICMP to TUN device: %v, continuing...", err)
+					}
+				}
+			}
+		}()
 
 		go func() {
 			defer wg.Done()
@@ -341,12 +365,10 @@ func MaintainTunnel(ctx context.Context, cfg MaintainTunnelConfig) {
 				packetBufferPool.Put(buf)
 
 				if len(icmp) > 0 {
-					if err := cfg.Device.WritePacket(icmp); err != nil {
-						if errors.As(err, new(*connectip.CloseError)) {
-							errChan <- fmt.Errorf("connection closed while writing ICMP to TUN device: %w", err)
-							return
-						}
-						log.Printf("Error writing ICMP to TUN device: %v, continuing...", err)
+					select {
+					case icmpChan <- icmp:
+					default:
+						log.Println("Dropping ICMP packet: injector queue full")
 					}
 				}
 			}
