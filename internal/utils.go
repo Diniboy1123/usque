@@ -104,11 +104,18 @@ func GenerateEcKeyPair() ([]byte, []byte, error) {
 //   - [][]byte: A slice containing the certificate in DER format.
 //   - error:    An error if certificate generation fails.
 func GenerateCert(privKey *ecdsa.PrivateKey, pubKey *ecdsa.PublicKey) ([][]byte, error) {
+	if privKey == nil {
+		return nil, errors.New("private key is required")
+	}
+	if pubKey == nil {
+		return nil, errors.New("public key is required")
+	}
+
 	cert, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{
 		SerialNumber: big.NewInt(0),
 		NotBefore:    time.Now(),
 		NotAfter:     time.Now().Add(1 * 24 * time.Hour),
-	}, &x509.Certificate{}, &privKey.PublicKey, privKey)
+	}, &x509.Certificate{}, pubKey, privKey)
 	if err != nil {
 		return nil, err
 	}
