@@ -14,11 +14,13 @@ Usque is an open-source reimplementation of the Cloudflare WARP client's MASQUE 
   - [Usage](#usage)
     - [Registration](#registration)
     - [Enrolling](#enrolling)
-    - [Native Tunnel Mode (for Advanced Users, Linux and Windows only!)](#native-tunnel-mode-for-advanced-users-linux-and-windows-only)
+    - [Native Tunnel Mode (for Advanced Users, Linux, Windows and macOS only!)](#native-tunnel-mode-for-advanced-users-linux-windows-and-macos-only)
       - [On Linux](#on-linux)
       - [On Windows](#on-windows)
+      - [On macOS](#on-macos)
       - [Routes on Linux](#routes-on-linux)
       - [Routes on Windows](#routes-on-windows)
+      - [Routes on macOS](#routes-on-macos)
     - [SOCKS5 Proxy Mode (easy, cross-platform)](#socks5-proxy-mode-easy-cross-platform)
     - [HTTP Proxy Mode (easy, cross-platform)](#http-proxy-mode-easy-cross-platform)
     - [L4 Proxy Modes (easy, cross-platform)](#l4-proxy-modes-easy-cross-platform)
@@ -152,7 +154,7 @@ While the registration command also handles device enrollment, in some cases, yo
 $ ./usque enroll
 ```
 
-### Native Tunnel Mode (for Advanced Users, Linux and Windows only!)
+### Native Tunnel Mode (for Advanced Users, Linux, Windows and macOS only!)
 
 The native tunnel is a good choice when you want a real network interface. It is also one of the faster modes of operation.
 
@@ -164,13 +166,17 @@ It **requires the `TUN` device** to be available on the system. This means your 
 
 It requires the [wintun.dll](https://www.wintun.net/) file to be present in the same directory as the `usque.exe` binary. Then it will take care of bringing up the interface and setting the IP addresses. Normally this also requires administrative privileges.
 
+#### On macOS
+
+It uses the built-in `utun` device (via [wireguard-go/tun](https://git.zx2c4.com/wireguard-go/about/)), so no extra kernel modules or DLLs are needed. `usque` creates the interface, assigns the WARP IPv4/IPv6 addresses and MTU with `ifconfig(8)`, and brings it up. macOS `utun` devices carry a 4-byte address-family header, which is handled internally, so the tunnel still transports raw IPv4/IPv6 — including **UDP** (QUIC/HTTP-3, WebRTC, DNS), unlike the SOCKS5 proxy mode. Creating the interface **requires root privileges** (`sudo`). In testing on Apple Silicon, throughput was competitive with the official WARP client (hundreds of Mbit/s to Cloudflare-fronted endpoints; tens of Mbit/s to distant non-Cloudflare hosts).
+
 To bring up a native tunnel, execute:
 
 ```shell
 $ sudo ./usque nativetun
 ```
 
-Unless otherwise specified, you should see a `tun0` (or `tun1`, `tun2`, etc.) interface appear on Linux. On Windows, the interface is typically named `usque`. If you didn't disable IPv4 and IPv6 inside the tunnel using cli flags (on Linux), you should also see the IPv4 and IPv6 address pre-assigned to this interface. This should be enough for applications that can route traffic through a specific network interface to function. For example `ping`:
+Unless otherwise specified, you should see a `tun0` (or `tun1`, `tun2`, etc.) interface appear on Linux. On Windows, the interface is typically named `usque`. On macOS, it is a kernel-assigned `utunN` device (for example `utun6`; pass `-n`/`--interface-name` to request a specific unit). If you didn't disable IPv4 and IPv6 inside the tunnel using cli flags (on Linux), you should also see the IPv4 and IPv6 address pre-assigned to this interface. This should be enough for applications that can route traffic through a specific network interface to function. For example `ping`:
 
 ```shell
 $ ping -I tun0 1.1
@@ -244,6 +250,23 @@ route add ::/0 [TUNNEL_GATEWAY] metric 1 if [TUN_INTERFACE_INDEX]
 
 > [!NOTE]
 > Replace `[TUNNEL_GATEWAY]` and `[TUN_INTERFACE_INDEX]` with the actual values for your tunnel adapter. You can get these by checking `ipconfig` and `route print`.
+
+#### Routes on macOS
+
+Assuming your regular interface is `en0`, your gateway is `192.168.1.1`, and the tunnel came up as `utun6`, first pin the tunnel endpoint to your physical gateway so usque's own MASQUE/QUIC connection does not loop back into the tunnel:
+
+```shell
+$ sudo route -n add -host 162.159.198.1 192.168.1.1
+```
+
+Then redirect the default route through the tunnel. Using the split-default `0.0.0.0/1` + `128.0.0.0/1` pair (instead of replacing `default`) leaves your original default route intact, which makes rollback easier:
+
+```shell
+$ sudo route -n add -net 0.0.0.0/1 -interface utun6
+$ sudo route -n add -net 128.0.0.0/1 -interface utun6
+```
+
+To undo, delete those routes (`sudo route -n delete -net 0.0.0.0/1 -interface utun6`, etc.) or simply stop `usque`, which tears the interface down.
 
 > [!CAUTION]
 > Always be careful with default routes, especially if you are running this on a headless machine. It is very easy to close yourself out of your current session. I suggest [network namespaces](https://man7.org/linux/man-pages/man7/network_namespaces.7.html) on Linux as a safer playground for experiments or a spare VM with physical access or serial console.

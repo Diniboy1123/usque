@@ -66,11 +66,18 @@ type TunnelDevice interface {
 	WritePacket(pkt []byte) error
 }
 
-// NetstackAdapter wraps a tun.Device (e.g. from netstack) to satisfy TunnelDevice.
+// NetstackAdapter wraps a tun.Device (for example wireguard-go/tun) to satisfy
+// TunnelDevice. Some platforms — notably the BSDs (FreeBSD, macOS) — require a
+// small packet headroom when using tun.Device.Read/Write because the
+// kernel-facing device carries a 4-byte address-family header. The offset field
+// lets platform-specific callers request that headroom while keeping the tunnel
+// pump raw-IP-only.
 type NetstackAdapter struct {
 	dev             tun.Device
+	offset          int
 	tunnelBufPool   sync.Pool
 	tunnelSizesPool sync.Pool
+	packetBufPool   sync.Pool
 }
 
 func (n *NetstackAdapter) ReadPacket(buf []byte) (int, error) {
@@ -83,15 +90,38 @@ func (n *NetstackAdapter) ReadPacket(buf []byte) (int, error) {
 		n.tunnelSizesPool.Put(sizesPtr)
 	}()
 
-	(*packetBufsPtr)[0] = buf
+	readBuf := buf
+	var pooledBufPtr *[]byte
+	if n.offset > 0 {
+		pooledBufPtr = n.packetBufPool.Get().(*[]byte)
+		pooledBuf := *pooledBufPtr
+		needed := len(buf) + n.offset
+		if cap(pooledBuf) < needed {
+			pooledBuf = make([]byte, needed)
+		}
+		readBuf = pooledBuf[:needed]
+	}
+
+	(*packetBufsPtr)[0] = readBuf
 	(*sizesPtr)[0] = 0
 
-	_, err := n.dev.Read(*packetBufsPtr, *sizesPtr, 0)
+	_, err := n.dev.Read(*packetBufsPtr, *sizesPtr, n.offset)
 	if err != nil {
+		if pooledBufPtr != nil {
+			*pooledBufPtr = readBuf[:0]
+			n.packetBufPool.Put(pooledBufPtr)
+		}
 		return 0, err
 	}
 
-	return (*sizesPtr)[0], nil
+	size := (*sizesPtr)[0]
+	if n.offset > 0 {
+		copy(buf, readBuf[n.offset:n.offset+size])
+		*pooledBufPtr = readBuf[:0]
+		n.packetBufPool.Put(pooledBufPtr)
+	}
+
+	return size, nil
 }
 
 func (n *NetstackAdapter) WritePacket(pkt []byte) error {
@@ -101,15 +131,47 @@ func (n *NetstackAdapter) WritePacket(pkt []byte) error {
 		n.tunnelBufPool.Put(packetBufsPtr)
 	}()
 
-	(*packetBufsPtr)[0] = pkt
-	_, err := n.dev.Write(*packetBufsPtr, 0)
+	writeBuf := pkt
+	var pooledBufPtr *[]byte
+	if n.offset > 0 {
+		pooledBufPtr = n.packetBufPool.Get().(*[]byte)
+		pooledBuf := *pooledBufPtr
+		needed := len(pkt) + n.offset
+		if cap(pooledBuf) < needed {
+			pooledBuf = make([]byte, needed)
+		}
+		writeBuf = pooledBuf[:needed]
+		copy(writeBuf[n.offset:], pkt)
+	}
+
+	(*packetBufsPtr)[0] = writeBuf
+	_, err := n.dev.Write(*packetBufsPtr, n.offset)
+
+	if pooledBufPtr != nil {
+		*pooledBufPtr = writeBuf[:0]
+		n.packetBufPool.Put(pooledBufPtr)
+	}
+
 	return err
 }
 
-// NewNetstackAdapter creates a new NetstackAdapter.
+// NewNetstackAdapter creates a new NetstackAdapter without packet headroom
+// (offset 0), suitable for Linux/Windows tun devices.
 func NewNetstackAdapter(dev tun.Device) TunnelDevice {
+	return NewNetstackAdapterWithOffset(dev, 0)
+}
+
+// NewNetstackAdapterWithOffset creates a NetstackAdapter with platform-specific
+// packet headroom for tun.Device.Read/Write. Use offset 4 on the BSDs (FreeBSD,
+// macOS), whose utun/tun devices carry a 4-byte address-family header.
+func NewNetstackAdapterWithOffset(dev tun.Device, offset int) TunnelDevice {
+	if offset < 0 {
+		panic("offset must not be negative")
+	}
+
 	return &NetstackAdapter{
-		dev: dev,
+		dev:    dev,
+		offset: offset,
 		tunnelBufPool: sync.Pool{
 			New: func() interface{} {
 				buf := make([][]byte, 1)
@@ -120,6 +182,12 @@ func NewNetstackAdapter(dev tun.Device) TunnelDevice {
 			New: func() interface{} {
 				sizes := make([]int, 1)
 				return &sizes
+			},
+		},
+		packetBufPool: sync.Pool{
+			New: func() interface{} {
+				buf := make([]byte, 0)
+				return &buf
 			},
 		},
 	}
