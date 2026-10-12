@@ -87,7 +87,7 @@ var sshCmd = &cobra.Command{
 	Use:   "ssh [user@]target[:port]",
 	Short: "SSH through the MASQUE tunnel",
 	Long:  "Establish an SSH connection through the usque MASQUE tunnel to a target virtual IP or hostname. Similar to Tailscale SSH.",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.MinimumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		if !config.ConfigLoaded {
 			cmd.Println("Config not loaded. Please register first.")
@@ -95,6 +95,10 @@ var sshCmd = &cobra.Command{
 		}
 
 		target := args[0]
+		var command string
+		if len(args) > 1 {
+			command = strings.Join(args[1:], " ")
+		}
 		user, host, port, err := parseSSHTarget(target)
 		if err != nil {
 			cmd.Printf("Failed to parse target '%s': %v\n", target, err)
@@ -423,10 +427,17 @@ var sshCmd = &cobra.Command{
 			}
 		}()
 
-		// Start interactive shell
-		if err := session.Shell(); err != nil {
-			log.Printf("Failed to start shell: %v", err)
-			return
+		if command != "" {
+			if err := session.Start(command); err != nil {
+				log.Printf("Failed to start command: %v", err)
+				return
+			}
+		} else {
+			// Start interactive shell
+			if err := session.Shell(); err != nil {
+				log.Printf("Failed to start shell: %v", err)
+				return
+			}
 		}
 
 		go func() {
