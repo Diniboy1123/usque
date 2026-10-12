@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"errors"
 	"fmt"
+	"io" // <--- 补上这一行
 	"log"
 	"net"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 	"github.com/Diniboy1123/usque/api"
 	"github.com/Diniboy1123/usque/config"
 	"github.com/Diniboy1123/usque/internal"
+	"github.com/pkg/sftp" // <--- 确保导入了 sftp 包
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/ssh"
 	"golang.zx2c4.com/wireguard/tun/netstack"
@@ -366,27 +368,89 @@ func keyAuthCallback(authorizedKeysPath string) func(conn ssh.ConnMetadata, key 
 	}
 }
 
+// 处理每个 SSH 连接的主循环
 func handleSSHConnection(conn net.Conn, config *ssh.ServerConfig) {
 	defer conn.Close()
+	
 	sshConn, chans, reqs, err := ssh.NewServerConn(conn, config)
 	if err != nil {
 		log.Printf("SSH handshake failed: %v", err)
 		return
 	}
 	defer sshConn.Close()
+
+	// 在后台处理全局请求
 	go ssh.DiscardRequests(reqs)
+
 	for ch := range chans {
 		if ch.ChannelType() != "session" {
 			ch.Reject(ssh.UnknownChannelType, "unknown channel type")
 			continue
 		}
+
 		channel, requests, err := ch.Accept()
 		if err != nil {
 			log.Printf("Could not accept channel: %v", err)
 			continue
 		}
-		go handleSession(channel, requests, sshConn.User())
+
+		// 统一在后台协程中分发是 SFTP 子系统还是普通 SSH 会话
+		go func(ch ssh.Channel, in <-chan *ssh.Request, username string) {
+			req, ok := <-in
+			if !ok {
+				ch.Close()
+				return
+			}
+
+			// 检查是否为 SFTP 子系统请求
+			if req.Type == "subsystem" {
+				if len(req.Payload) >= 4 && string(req.Payload[4:]) == "sftp" {
+					req.Reply(true, nil) // 修正：只传一个 bool
+
+					// 启动 SFTP 服务端（可按需通过 sftp.WithRoot 限制根目录沙箱）
+					serverOptions := []sftp.ServerOption{}
+
+					sftpServer, err := sftp.NewServer(
+						io.ReadWriteCloser(ch),
+						serverOptions...,
+					)
+					if err != nil {
+						log.Printf("Failed to start SFTP server: %v", err)
+						ch.Close()
+						return
+					}
+
+					_ = sftpServer.Serve()
+					return
+				}
+
+				if req.WantReply {
+					req.Reply(false, nil) // 修正：只传一个 bool
+				}
+				ch.Close()
+				return
+			}
+
+			// 如果不是 subsystem（说明是 pty-req, shell, exec 等普通终端请求），交由 handleSession 处理
+			handleSessionWithFirstRequest(ch, in, req, username)
+
+		}(channel, requests, sshConn.User())
 	}
+}
+
+// 辅助函数：将第一个偷看消费掉的 request 与后续的 requests 管道合并
+func handleSessionWithFirstRequest(channel ssh.Channel, requests <-chan *ssh.Request, firstReq *ssh.Request, username string) {
+	proxyChan := make(chan *ssh.Request, 10)
+	proxyChan <- firstReq
+	
+	go func() {
+		defer close(proxyChan)
+		for req := range requests {
+			proxyChan <- req
+		}
+	}()
+
+	handleSession(channel, proxyChan, username)
 }
 
 func handleSession(channel ssh.Channel, requests <-chan *ssh.Request, username string) {

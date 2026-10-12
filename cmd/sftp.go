@@ -93,19 +93,7 @@ func runSFTP(cmd *cobra.Command, args []string) error {
 		return errors.New("usage: usque sftp [-w password] [-r] source ... dest")
 	}
 
-	// Resolve the password. -w takes precedence; otherwise we prompt
-	// on the terminal (echo disabled) so the password never appears
-	// in shell history.
-	password, _ := cmd.Flags().GetString("password")
-	if password == "" {
-		fmt.Fprintf(cmd.ErrOrStderr(), "SFTP password for %s: ", args[len(args)-1])
-		pw, err := readPasswordForSFTP(cmd)
-		if err != nil {
-			return fmt.Errorf("read password: %w", err)
-		}
-		password = pw
-	}
-
+	// 1. 先解析参数，准确找出远程主机信息
 	// Classify operands as local or remote. Mixed form is the only
 	// form supported (mirrors OpenSSH scp).
 	parsed, err := parseSCPArgs(args)
@@ -137,6 +125,29 @@ func runSFTP(cmd *cobra.Command, args []string) error {
 		return errors.New("sftp: exactly one operand must be on the remote side")
 	}
 
+	// 检查用户是否通过 -P / --port 显式指定了端口
+	if p, err := cmd.Flags().GetInt("port"); err == nil && p != 0 {
+    	remote.Port = p
+    }
+
+	// 2. 使用解析出来的 remote 信息来拼接友好的提示文案
+	// Resolve the password. -w takes precedence; otherwise we prompt
+	// on the terminal (echo disabled) so the password never appears
+	// in shell history.
+	password, _ := cmd.Flags().GetString("password")
+	if password == "" {
+		displayTarget := remote.Host
+		if remote.User != "" {
+			displayTarget = fmt.Sprintf("%s@%s", remote.User, remote.Host)
+		}
+		fmt.Fprintf(cmd.ErrOrStderr(), "SFTP password for %s: ", displayTarget)
+		pw, err := readPasswordForSFTP(cmd)
+		if err != nil {
+			return fmt.Errorf("read password: %w", err)
+		}
+		password = pw
+	}
+    
 	log.Printf("Establishing MASQUE connection to %s:%d", remote.Host, remote.Port)
 	client, cleanup, err := establishSSHTunnel(cmd, remote.User, remote.Host, remote.Port, password, "sftp")
 	if err != nil {
@@ -193,6 +204,7 @@ func runSFTP(cmd *cobra.Command, args []string) error {
 			}
 		}
 		log.Printf("SFTP upload done (%d source(s))", len(sources))
+		os.Exit(0)
 		return nil
 	}
 
@@ -222,6 +234,7 @@ func runSFTP(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("sftp: download %s: %w", remoteSrc, err)
 	}
 	log.Printf("SFTP download done -> %s", localDst)
+	os.Exit(0)
 	return nil
 }
 
