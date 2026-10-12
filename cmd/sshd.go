@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"strings" // <--- 加上这一行
 	"syscall" // <--- 加上这一行
 	"time"
 
@@ -529,15 +530,27 @@ func handleSession(channel ssh.Channel, requests <-chan *ssh.Request, username s
 					Command string
 				}
 				_ = ssh.Unmarshal(req.Payload, &payload)
-				cmd := exec.Command("script", "-q", "-c", payload.Command, "/dev/null")
+				
+				var cmd *exec.Cmd
+				// 判断是否为 SCP 命令，如果是则直接执行，不经过 script 包装
+				if strings.HasPrefix(payload.Command, "scp ") {
+					// 将命令中的 "scp " 替换为绝对路径 "/usr/bin/scp "
+					//fullCmd := strings.Replace(payload.Command, "scp ", "/usr/bin/scp ", 1)
+					//cmd = exec.Command("sh", "-c", fullCmd)
+					cmd = exec.Command("sh", "-c", payload.Command)
+				} else {
+					cmd = exec.Command("script", "-q", "-c", payload.Command, "/dev/null")
+					cmd.Env = append(os.Environ(),
+						fmt.Sprintf("COLUMNS=%d", cols),
+						fmt.Sprintf("LINES=%d", rows),
+						"TERM=xterm-256color",
+					)
+				}
+				
 				if u, err := user.Lookup(username); err == nil {
 					setCmdUser(cmd, u, username)
 				}
-				cmd.Env = append(os.Environ(),
-					fmt.Sprintf("COLUMNS=%d", cols),
-					fmt.Sprintf("LINES=%d", rows),
-					"TERM=xterm-256color",
-				)
+				
 				cmd.Stdin = channel
 				cmd.Stdout = channel
 				cmd.Stderr = channel

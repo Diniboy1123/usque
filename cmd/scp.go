@@ -939,6 +939,7 @@ func scpDownloadFile(ctx context.Context, client *ssh.Client, remotePath, localP
 	if err := scpWriteAck(stdin); err != nil {
 		return err
 	}
+	os.Exit(0)
 	return sess.Wait()
 }
 

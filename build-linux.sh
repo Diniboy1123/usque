@@ -10,7 +10,7 @@ rm -f "${SCRIPT_DIR}/build-linux/usque"
 echo "==> Building Linux static binary..."
 mkdir -p "${SCRIPT_DIR}/build-linux"
 cd "${SCRIPT_DIR}"
-CGO_ENABLED=0 "${GO}" build -v -o build-linux/usque .
+CGO_ENABLED=0 "${GO}" build -ldflags="-s -w" -v -o build-linux/usque .
 
 echo "==> Done."
 echo "Linux : ${SCRIPT_DIR}/build-linux/usque"
