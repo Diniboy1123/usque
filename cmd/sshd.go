@@ -405,24 +405,33 @@ func handleSSHConnection(conn net.Conn, config *ssh.ServerConfig) {
 
 			// 检查是否为 SFTP 子系统请求
 			if req.Type == "subsystem" {
-				if len(req.Payload) >= 4 && string(req.Payload[4:]) == "sftp" {
-					req.Reply(true, nil) // 修正：只传一个 bool
+				var subPayload struct {
+				Name string
+			}
+				if err := ssh.Unmarshal(req.Payload, &subPayload); err == nil {
+					// 转为小写匹配，兼容不同客户端的写法
+					if strings.ToLower(subPayload.Name) == "sftp" {
+						log.Println("requested SFTP subsystem, starting server...")
+						req.Reply(true, nil) // 修正：只传一个 bool
 
-					// 启动 SFTP 服务端（可按需通过 sftp.WithRoot 限制根目录沙箱）
-					serverOptions := []sftp.ServerOption{}
+						// 启动 SFTP 服务端（可按需通过 sftp.WithRoot 限制根目录沙箱）
+						serverOptions := []sftp.ServerOption{}
 
-					sftpServer, err := sftp.NewServer(
-						io.ReadWriteCloser(ch),
-						serverOptions...,
-					)
-					if err != nil {
-						log.Printf("Failed to start SFTP server: %v", err)
-						ch.Close()
+						sftpServer, err := sftp.NewServer(
+							io.ReadWriteCloser(ch),
+							serverOptions...,
+						)
+						if err != nil {
+							log.Printf("Failed to start SFTP server: %v", err)
+							ch.Close()
+							return
+						}
+
+						if err := sftpServer.Serve(); err != nil {
+							log.Printf("SFTP server error: %v", err)
+						}
 						return
 					}
-
-					_ = sftpServer.Serve()
-					return
 				}
 
 				if req.WantReply {
@@ -540,6 +549,7 @@ func handleSession(channel ssh.Channel, requests <-chan *ssh.Request, username s
 					cmd = exec.Command("sh", "-c", payload.Command)
 				} else {
 					cmd = exec.Command("script", "-q", "-c", payload.Command, "/dev/null")
+					//cmd = exec.Command("sh", "-c", payload.Command)
 					cmd.Env = append(os.Environ(),
 						fmt.Sprintf("COLUMNS=%d", cols),
 						fmt.Sprintf("LINES=%d", rows),
@@ -550,13 +560,20 @@ func handleSession(channel ssh.Channel, requests <-chan *ssh.Request, username s
 				if u, err := user.Lookup(username); err == nil {
 					setCmdUser(cmd, u, username)
 				}
-				
-				cmd.Stdin = channel
+				// 核心修改：对于单条执行的命令，其实并不需要将标准输入长时间挂载在 channel 上阻塞
+				// 如果命令不需要接收外部标准输入，可以直接切断或不绑定 Stdin
+				cmd.Stdin = nil // 关键：避免 Stdin 阻塞等待客户端 EOF
+				//cmd.Stdin = channel
 				cmd.Stdout = channel
 				cmd.Stderr = channel
 
 				err := cmd.Run()
 				exitCode := getExitCode(err)
+				
+				// 【新增这一行】主动关闭 channel 的写端，触发客户端 io.Copy 结束阻塞
+				if writer, ok := channel.(interface{ CloseWrite() error }); ok {
+					_ = writer.CloseWrite()
+				}
 
 				// 关键修复：主动向客户端发送退出状态码
 				_, _ = channel.SendRequest("exit-status", false, ssh.Marshal(&struct{ Status uint32 }{Status: uint32(exitCode)}))

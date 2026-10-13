@@ -477,15 +477,31 @@ func parseSSHTarget(target string) (string, string, int, error) {
 		target = target[idx+1:]
 	}
 
-	// Split host:port
-	if idx := strings.LastIndex(target, ":"); idx != -1 {
-		host = target[:idx]
-		portStr := target[idx+1:]
-		if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
-			return "", "", 0, fmt.Errorf("invalid port: %s", portStr)
+	// Handle IPv6 [host]:port
+	if strings.HasPrefix(target, "[") {
+		end := strings.Index(target, "]")
+		if end < 0 {
+			return "", "", 0, fmt.Errorf("invalid IPv6 address")
+		}
+		host = target[1:end]
+		if end+1 < len(target) && target[end+1] == ':' {
+			portStr := target[end+2:]
+			if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
+				return "", "", 0, fmt.Errorf("invalid port: %s", portStr)
+			}
 		}
 	} else {
-		host = target
+		// Split host:port (last colon to handle IPv6 without brackets)
+		if idx := strings.LastIndex(target, ":"); idx != -1 {
+			// simple heuristic: if colon appears after another char and not in brackets
+			host = target[:idx]
+			portStr := target[idx+1:]
+			if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
+				return "", "", 0, fmt.Errorf("invalid port: %s", portStr)
+			}
+		} else {
+			host = target
+		}
 	}
 
 	if host == "" {

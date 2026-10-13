@@ -239,9 +239,25 @@ func parseSCPEntry(s string) (scpEntry, error) {
 	if pathPart == "" {
 		return scpEntry{}, fmt.Errorf("missing remote path")
 	}
-	user, host, port, err := parseSSHTarget(hostPart)
+	port := 0
+	// Check if pathPart is like 2235:/path (port specified)
+	portInPath := false
+	if i := strings.Index(pathPart, ":"); i > 0 {
+		// try to parse as port
+		maybePort := pathPart[:i]
+		var p int
+		if _, err := fmt.Sscanf(maybePort, "%d", &p); err == nil && p > 0 && p < 65536 {
+			portInPath = true
+			port = p
+			pathPart = pathPart[i+1:]
+		}
+	}
+	user, host, parsedPort, err := parseSSHTarget(hostPart)
 	if err != nil {
 		return scpEntry{}, fmt.Errorf("invalid host spec %q: %w", hostPart, err)
+	}
+	if !portInPath && parsedPort != 0 {
+		port = parsedPort
 	}
 	if port == 0 {
 		port = 22
