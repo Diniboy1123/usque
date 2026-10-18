@@ -21,8 +21,9 @@ var portFwCmd = &cobra.Command{
 	Use:   "portfw",
 	Short: "Forward ports through a MASQUE tunnel",
 	Long: "This tool is useful if you have Cloudflare Zero Trust Gateway enabled and want to forward ports to/from the tunnel." +
-		" It creates a virtual TUN device and forward ports through it either from or to the client. It works a bit like SSH port forwarding. TCP only at the moment." +
-		"Doesn't require elevated privileges.",
+		" It creates a virtual TUN device and forward ports through it either from or to the client. It works a bit like SSH port forwarding." +
+		" TCP is the default; append \"/udp\" to a mapping to forward UDP datagrams." +
+		" Doesn't require elevated privileges.",
 	Run: func(cmd *cobra.Command, args []string) {
 		if !config.ConfigLoaded {
 			cmd.Println("Config not loaded. Please register first.")
@@ -201,6 +202,16 @@ var portFwCmd = &cobra.Command{
 			return
 		}
 
+		udpTimeout, err := cmd.Flags().GetDuration("udp-timeout")
+		if err != nil {
+			cmd.Printf("Failed to get UDP timeout: %v\n", err)
+			return
+		}
+		if udpTimeout <= 0 {
+			cmd.Printf("--udp-timeout must be greater than zero\n")
+			return
+		}
+
 		alwaysReconnect := true
 		alwaysChanged := cmd.Flags().Changed("always-reconnect")
 		dontAlwaysChanged := cmd.Flags().Changed("dont-always-reconnect")
@@ -269,7 +280,12 @@ var portFwCmd = &cobra.Command{
 		// Start Local Port Forwarding (-L)
 		for _, pm := range localPortMappings {
 			go func(pm internal.PortMapping) {
-				err := forwardPort(tunNet, pm, false) // false = local forwarding
+				var err error
+				if pm.Network == "udp" {
+					err = forwardUDPPortLocal(tunNet, pm, udpTimeout)
+				} else {
+					err = forwardPort(tunNet, pm, false) // false = local forwarding
+				}
 				if err != nil {
 					cmd.Printf("Error in local forwarding %d: %v\n", pm.LocalPort, err)
 				}
@@ -279,7 +295,12 @@ var portFwCmd = &cobra.Command{
 		// Start Remote Port Forwarding (-R)
 		for _, pm := range remotePortMappings {
 			go func(pm internal.PortMapping) {
-				err := forwardPort(tunNet, pm, true) // true = remote forwarding
+				var err error
+				if pm.Network == "udp" {
+					err = forwardUDPPortRemote(tunNet, pm, udpTimeout)
+				} else {
+					err = forwardPort(tunNet, pm, true) // true = remote forwarding
+				}
 				if err != nil {
 					cmd.Printf("Error in remote forwarding %d: %v\n", pm.LocalPort, err)
 				}
@@ -401,8 +422,8 @@ func handleConnection(localConn net.Conn, pm internal.PortMapping, isRemote bool
 }
 
 func init() {
-	portFwCmd.Flags().StringArrayP("local-ports", "L", []string{}, "List of port mappings to forward (SSH like e.g. localhost:8080:100.96.0.2:8080)")
-	portFwCmd.Flags().StringArrayP("remote-ports", "R", []string{}, "List of port mappings to forward (SSH like e.g. 100.96.0.3:8080:localhost:8080)")
+	portFwCmd.Flags().StringArrayP("local-ports", "L", []string{}, "List of port mappings to forward (SSH like e.g. localhost:8080:100.96.0.2:8080; append /udp for UDP)")
+	portFwCmd.Flags().StringArrayP("remote-ports", "R", []string{}, "List of port mappings to forward (SSH like e.g. 100.96.0.3:8080:localhost:8080; append /udp for UDP)")
 	portFwCmd.Flags().IntP("connect-port", "P", 443, "Used port for MASQUE connection")
 	portFwCmd.Flags().StringArrayP("dns", "d", []string{"9.9.9.9", "149.112.112.112", "2620:fe::fe", "2620:fe::9"}, "DNS servers to use inside the MASQUE tunnel")
 	portFwCmd.Flags().BoolP("ipv6", "6", false, "Use IPv6 for MASQUE connection")
@@ -413,6 +434,7 @@ func init() {
 	portFwCmd.Flags().IntP("mtu", "m", 1280, "MTU for MASQUE connection")
 	portFwCmd.Flags().Uint16P("initial-packet-size", "i", 0, "Custom initial packet size for MASQUE connection (default: auto with PMTU discovery)")
 	portFwCmd.Flags().DurationP("reconnect-delay", "r", 1*time.Second, "Delay between reconnect attempts")
+	portFwCmd.Flags().Duration("udp-timeout", 60*time.Second, "Idle timeout for UDP forwarding sessions")
 	portFwCmd.Flags().Bool("http2", false, "Use HTTP/2 over TCP+TLS instead of HTTP/3 over QUIC."+config.EndpointHelpSuffixH2)
 	portFwCmd.Flags().Bool("insecure", false, "Disable endpoint certificate pinning and trust any certificate")
 	portFwCmd.Flags().Bool("always-reconnect", false, "Always reconnect after tunnel loss, even when idle (default behavior in portfw)")

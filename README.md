@@ -368,6 +368,22 @@ $ ./usque portfw -R 100.96.0.3:8080:localhost:8080 -L localhost:8081:100.96.0.2:
 > [!TIP]
 > Any number of ports are supported. You can chain many ports together if you specify the flag and the corresponding argument one after another.
 
+#### UDP forwarding
+
+TCP is used by default. Append `/udp` to a mapping to forward UDP datagrams instead:
+
+```shell
+$ ./usque portfw \
+    -L localhost:5353:100.96.0.2:53/udp \
+    -R 100.96.0.3:51820:localhost:51820/udp \
+    -L localhost:8081:100.96.0.2:8081
+```
+
+TCP and UDP mappings can be mixed in a single invocation. Each source address gets
+its own UDP flow; flows that stay idle are closed after `--udp-timeout`
+(default `60s`). Since UDP is connectionless, the first datagram from a new source
+address creates a flow, and the flow is kept alive for as long as traffic continues.
+
 ### Connect/Disconnect Hooks
 
 All tunnel modes can invoke an external executable after each successful tunnel connect and after each tunnel loss. This is useful for re-applying routes, firewall rules, or notifications without hard-coding them into the tool.

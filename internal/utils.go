@@ -20,6 +20,7 @@ import (
 
 // PortMapping represents a network port forwarding rule.
 type PortMapping struct {
+	Network     string // The network protocol: "tcp" (default) or "udp".
 	BindAddress string // The address to bind the local port.
 	LocalPort   int    // The local port number.
 	RemoteIP    string // The remote destination IP address.
@@ -211,9 +212,22 @@ func parsePortMapping(port string) (bindAddress string, localPort int, remoteHos
 	return bindAddress, localPort, remoteHost, remotePort, nil
 }
 
+// splitMappingProtocol extracts an optional "/tcp" or "/udp" suffix from a
+// port mapping. Mappings without a suffix keep the historical TCP default.
+func splitMappingProtocol(mapping string) (network string, rest string) {
+	switch {
+	case strings.HasSuffix(mapping, "/udp"):
+		return "udp", strings.TrimSuffix(mapping, "/udp")
+	case strings.HasSuffix(mapping, "/tcp"):
+		return "tcp", strings.TrimSuffix(mapping, "/tcp")
+	default:
+		return "tcp", mapping
+	}
+}
+
 // ParsePortMapping parses a port mapping string into a structured PortMapping.
 //
-// The expected format is: `[bind_address:]local_port:remote_host:remote_port`.
+// The expected format is: `[bind_address:]local_port:remote_host:remote_port[/udp|/tcp]`.
 //
 // Parameters:
 //   - port: string - The port mapping string.
@@ -222,12 +236,14 @@ func parsePortMapping(port string) (bindAddress string, localPort int, remoteHos
 //   - PortMapping: A structured representation of the parsed port mapping.
 //   - error:       An error if the parsing fails.
 func ParsePortMapping(port string) (PortMapping, error) {
-	bindAddress, localPort, remoteHost, remotePort, err := parsePortMapping(port)
+	network, mapping := splitMappingProtocol(port)
+	bindAddress, localPort, remoteHost, remotePort, err := parsePortMapping(mapping)
 	if err != nil {
 		return PortMapping{}, err
 	}
 
 	return PortMapping{
+		Network:     network,
 		BindAddress: bindAddress,
 		LocalPort:   localPort,
 		RemoteIP:    remoteHost,
