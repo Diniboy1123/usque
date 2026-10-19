@@ -547,6 +547,7 @@ func handleSession(channel ssh.Channel, requests <-chan *ssh.Request, username s
 					//fullCmd := strings.Replace(payload.Command, "scp ", "/usr/bin/scp ", 1)
 					//cmd = exec.Command("sh", "-c", fullCmd)
 					cmd = exec.Command("sh", "-c", payload.Command)
+					cmd.Stdin = channel // 必须允许 SCP 读写交互
 				} else {
 					cmd = exec.Command("script", "-q", "-c", payload.Command, "/dev/null")
 					//cmd = exec.Command("sh", "-c", payload.Command)
@@ -555,15 +556,15 @@ func handleSession(channel ssh.Channel, requests <-chan *ssh.Request, username s
 						fmt.Sprintf("LINES=%d", rows),
 						"TERM=xterm-256color",
 					)
+					// 核心修改：对于单条执行的命令，其实并不需要将标准输入长时间挂载在 channel 上阻塞
+					// 如果命令不需要接收外部标准输入，可以直接切断或不绑定 Stdin
+					// 普通命令可以切断 Stdin 避免阻塞
+					cmd.Stdin = nil // 关键：避免 Stdin 阻塞等待客户端 EOF
 				}
 				
 				if u, err := user.Lookup(username); err == nil {
 					setCmdUser(cmd, u, username)
 				}
-				// 核心修改：对于单条执行的命令，其实并不需要将标准输入长时间挂载在 channel 上阻塞
-				// 如果命令不需要接收外部标准输入，可以直接切断或不绑定 Stdin
-				cmd.Stdin = nil // 关键：避免 Stdin 阻塞等待客户端 EOF
-				//cmd.Stdin = channel
 				cmd.Stdout = channel
 				cmd.Stderr = channel
 
