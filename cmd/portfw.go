@@ -286,24 +286,27 @@ var portFwCmd = &cobra.Command{
 			}(pm)
 		}
 
-		// One packet must be sent in order to listen for incoming packets
-		// a ping may suffice as well, but we will use a simple GET request
-		client := &http.Client{
-			Transport: &http.Transport{
-				DialContext: tunNet.DialContext,
-			},
+		if len(localPortMappings) == 0 || len(remotePortMappings) > 0 {
+			// Remote listeners need outbound activity to activate incoming traffic.
+			// A local client generates that activity itself. Keep the existing probe
+			// when no mappings are supplied.
+			client := &http.Client{
+				Transport: &http.Transport{
+					DialContext: tunNet.DialContext,
+				},
+			}
+			resp, err := client.Get("https://cloudflareok.com/test")
+			if err != nil {
+				cmd.Printf("Failed to make request to cloudflare.com: %v\n", err)
+				return
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != 204 {
+				cmd.Printf("Failed to make request to cloudflare.com: %s\n", resp.Status)
+				return
+			}
+			log.Println("Successfully connected to Cloudflare")
 		}
-		resp, err := client.Get("https://cloudflareok.com/test")
-		if err != nil {
-			cmd.Printf("Failed to make request to cloudflare.com: %v\n", err)
-			return
-		}
-		defer func() { _ = resp.Body.Close() }()
-		if resp.StatusCode != 204 {
-			cmd.Printf("Failed to make request to cloudflare.com: %s\n", resp.Status)
-			return
-		}
-		log.Println("Successfully connected to Cloudflare")
 
 		select {}
 	},
