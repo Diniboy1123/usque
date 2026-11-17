@@ -37,6 +37,7 @@ func startupConfig(t *testing.T, local, remote []string) {
 	}
 	oldConfig, oldLoaded := config.AppConfig, config.ConfigLoaded
 	oldSilence := portFwCmd.SilenceUsage
+	oldSilenceErrors := portFwCmd.SilenceErrors
 	config.AppConfig = config.Config{
 		PrivateKey:     base64.StdEncoding.EncodeToString(private),
 		EndpointPubKey: string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: public})),
@@ -47,6 +48,7 @@ func startupConfig(t *testing.T, local, remote []string) {
 	t.Cleanup(func() {
 		config.AppConfig, config.ConfigLoaded = oldConfig, oldLoaded
 		portFwCmd.SilenceUsage = oldSilence
+		portFwCmd.SilenceErrors = oldSilenceErrors
 	})
 	for _, item := range []struct {
 		name   string
@@ -77,7 +79,7 @@ func TestPortfwStartupBusyPortReturnsError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer busy.Close()
+	defer func() { _ = busy.Close() }()
 	mapping := fmt.Sprintf("127.0.0.1:%d:127.0.0.1:8443", busy.Addr().(*net.TCPAddr).Port)
 	startupConfig(t, []string{mapping}, nil)
 	// Valid dummy credentials let this reach binding, without any tunnel dial.
@@ -103,7 +105,7 @@ func TestPortfwStartupRollsBackEarlierListeners(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer busy.Close()
+			defer func() { _ = busy.Close() }()
 			local := []string{fmt.Sprintf("127.0.0.1:%d:127.0.0.1:8443", firstPort)}
 			var remote []string
 			expected := busy.Addr().String()
@@ -150,7 +152,7 @@ func TestPortfwForwarderStopsAfterOwnerClosesListener(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer dev.Close()
+			defer func() { _ = dev.Close() }()
 			mapping := internal.PortMapping{BindAddress: "127.0.0.1"}
 			if remote {
 				mapping.BindAddress = "100.64.0.2"

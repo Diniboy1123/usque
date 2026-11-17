@@ -272,6 +272,7 @@ var portFwCmd = &cobra.Command{
 				listener, err := listenForwardPort(tunNet, pm, group.remote)
 				if err != nil {
 					cmd.SilenceUsage = true
+					cmd.SilenceErrors = true
 					return err
 				}
 				forwards = append(forwards, forwarding{listener, pm, group.remote})
@@ -325,20 +326,19 @@ var portFwCmd = &cobra.Command{
 // listenForwardPort binds before maintenance starts so a failed mapping can
 // roll back all listeners without dialing the MASQUE endpoint.
 func listenForwardPort(netstackNet *netstack.Net, pm internal.PortMapping, isRemote bool) (net.Listener, error) {
-	addr := net.JoinHostPort(pm.BindAddress, fmt.Sprint(pm.LocalPort))
+	addr := fmt.Sprintf("%s:%d", pm.BindAddress, pm.LocalPort)
+	local, err := netip.ParseAddrPort(addr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid local address: %w", err)
+	}
 	var listener net.Listener
-	var err error
 	if isRemote {
-		var local netip.AddrPort
-		local, err = netip.ParseAddrPort(addr)
-		if err == nil {
-			listener, err = netstackNet.ListenTCPAddrPort(local)
-		}
+		listener, err = netstackNet.ListenTCPAddrPort(local)
 	} else {
 		listener, err = net.Listen("tcp", addr)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("listen on %s: %w", addr, err)
+		return nil, fmt.Errorf("failed to listen on %s: %w", addr, err)
 	}
 	return listener, nil
 }
@@ -346,7 +346,12 @@ func listenForwardPort(netstackNet *netstack.Net, pm internal.PortMapping, isRem
 // forwardPort serves an already-bound listener. stop is closed before the owner
 // closes its listeners; virtual listeners do not wrap net.ErrClosed.
 func forwardPort(listener net.Listener, netstackNet *netstack.Net, pm internal.PortMapping, isRemote bool, stop <-chan struct{}) {
-	log.Printf("Forwarding %s to %s:%d (remote listener: %t)", listener.Addr(), pm.RemoteIP, pm.RemotePort, isRemote)
+	addr := fmt.Sprintf("%s:%d", pm.BindAddress, pm.LocalPort)
+	if isRemote {
+		log.Printf("Remote forwarding: Listening on MASQUE network %s, forwarding to local %s:%d", addr, pm.RemoteIP, pm.RemotePort)
+	} else {
+		log.Printf("Local forwarding: Listening on %s, forwarding to remote %s:%d", addr, pm.RemoteIP, pm.RemotePort)
+	}
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -354,7 +359,7 @@ func forwardPort(listener net.Listener, netstackNet *netstack.Net, pm internal.P
 			case <-stop:
 				return
 			default:
-				log.Printf("Accept error on %s: %v", listener.Addr(), err)
+				log.Printf("Accept error on %s: %v", addr, err)
 				continue
 			}
 		}
