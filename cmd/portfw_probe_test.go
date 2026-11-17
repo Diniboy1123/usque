@@ -143,8 +143,9 @@ func runProbeChild(t *testing.T, args []string) (context.Context, <-chan struct{
 				}
 			}
 		}
+		_ = cmd.Wait()
+		close(exited)
 	}()
-	go func() { _ = cmd.Wait(); close(exited) }()
 	t.Cleanup(func() { cancel(); <-exited })
 	select {
 	case <-ready:
