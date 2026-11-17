@@ -16,7 +16,6 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/yosida95/uritemplate/v3"
-	"golang.org/x/net/http2"
 )
 
 // PrepareTlsConfig creates a TLS configuration using the provided certificate and SNI (Server Name Indication).
@@ -236,10 +235,25 @@ func newHTTP2Client(baseTLSConfig *tls.Config, endpoint *net.TCPAddr, connectURI
 
 	tlsConfig := baseTLSConfig.Clone()
 	tlsConfig.NextProtos = []string{"h2"}
+	verifyConnection := tlsConfig.VerifyConnection
+	tlsConfig.VerifyConnection = func(state tls.ConnectionState) error {
+		if verifyConnection != nil {
+			if err := verifyConnection(state); err != nil {
+				return err
+			}
+		}
+		if state.NegotiatedProtocol != "h2" {
+			return errors.New("CONNECT-IP requires HTTP/2 ALPN")
+		}
+		return nil
+	}
 
 	if proxyURL == nil {
-		transport := &http2.Transport{
-			DialTLSContext: func(ctx context.Context, network, _ string, _ *tls.Config) (net.Conn, error) {
+		transport := &http.Transport{
+			ForceAttemptHTTP2: true,
+			DisableKeepAlives: true,
+			TLSClientConfig:   tlsConfig,
+			DialTLSContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
 				dialer := &net.Dialer{}
 				conn, err := dialer.DialContext(ctx, network, endpoint.String())
 				if err != nil {
@@ -264,6 +278,7 @@ func newHTTP2Client(baseTLSConfig *tls.Config, endpoint *net.TCPAddr, connectURI
 	transport := &http.Transport{
 		Proxy:              http.ProxyFromEnvironment,
 		ForceAttemptHTTP2:  true,
+		DisableKeepAlives:  true,
 		DisableCompression: true,
 		TLSClientConfig:    tlsConfig,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
