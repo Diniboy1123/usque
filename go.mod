@@ -7,6 +7,7 @@ require (
 	github.com/quic-go/quic-go v0.60.0
 	github.com/songgao/water v0.0.0-20200317203138-2b4b6d7c09d8
 	github.com/spf13/cobra v1.10.2
+	github.com/spf13/pflag v1.0.10
 	github.com/txthinking/runnergroup v0.0.0-20250224021307-5864ffeb65ae
 	github.com/txthinking/socks5 v0.0.0-20260601051520-339b044ab0eb
 	github.com/vishvananda/netlink v1.3.1
@@ -22,7 +23,6 @@ require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/patrickmn/go-cache v2.1.0+incompatible // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
-	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/vishvananda/netns v0.0.5 // indirect
 	go.uber.org/mock v0.6.0 // indirect
 	golang.org/x/crypto v0.53.0 // indirect
