@@ -24,79 +24,68 @@ var portFwCmd = &cobra.Command{
 		" It creates a virtual TUN device and forward ports through it either from or to the client. It works a bit like SSH port forwarding. TCP only at the moment." +
 		"Doesn't require elevated privileges.",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		cmd.SilenceUsage = true
+		cmd.SilenceErrors = true
 		if !config.ConfigLoaded {
-			cmd.Println("Config not loaded. Please register first.")
-			return nil
+			return fmt.Errorf("config not loaded; please register first")
 		}
 
 		sni, err := cmd.Flags().GetString("sni-address")
 		if err != nil {
-			cmd.Printf("Failed to get SNI address: %v\n", err)
-			return nil
+			return fmt.Errorf("failed to get SNI address: %w", err)
 		}
 
 		privKey, err := config.AppConfig.GetEcPrivateKey()
 		if err != nil {
-			cmd.Printf("Failed to get private key: %v\n", err)
-			return nil
+			return fmt.Errorf("failed to get private key: %w", err)
 		}
 		peerPubKey, err := config.AppConfig.GetEcEndpointPublicKey()
 		if err != nil {
-			cmd.Printf("Failed to get public key: %v\n", err)
-			return nil
+			return fmt.Errorf("failed to get public key: %w", err)
 		}
 
 		cert, err := internal.GenerateCert(privKey, &privKey.PublicKey)
 		if err != nil {
-			cmd.Printf("Failed to generate cert: %v\n", err)
-			return nil
+			return fmt.Errorf("failed to generate cert: %w", err)
 		}
 
 		insecure, err := cmd.Flags().GetBool("insecure")
 		if err != nil {
-			cmd.Printf("Failed to get insecure flag: %v\n", err)
-			return nil
+			return fmt.Errorf("failed to get insecure flag: %w", err)
 		}
 
 		tlsConfig, err := api.PrepareTlsConfig(privKey, peerPubKey, cert, sni, insecure)
 		if err != nil {
-			cmd.Printf("Failed to prepare TLS config: %v\n", err)
-			return nil
+			return fmt.Errorf("failed to prepare TLS config: %w", err)
 		}
 
 		keepalivePeriod, err := cmd.Flags().GetDuration("keepalive-period")
 		if err != nil {
-			cmd.Printf("Failed to get keepalive period: %v\n", err)
-			return nil
+			return fmt.Errorf("failed to get keepalive period: %w", err)
 		}
 		initialPacketSize, err := cmd.Flags().GetUint16("initial-packet-size")
 		if err != nil {
-			cmd.Printf("Failed to get initial packet size: %v\n", err)
-			return nil
+			return fmt.Errorf("failed to get initial packet size: %w", err)
 		}
 
 		connectPort, err := cmd.Flags().GetInt("connect-port")
 		if err != nil {
-			cmd.Printf("Failed to get connect port: %v\n", err)
-			return nil
+			return fmt.Errorf("failed to get connect port: %w", err)
 		}
 
 		useHTTP2, err := cmd.Flags().GetBool("http2")
 		if err != nil {
-			cmd.Printf("Failed to get HTTP/2 flag: %v\n", err)
-			return nil
+			return fmt.Errorf("failed to get HTTP/2 flag: %w", err)
 		}
 
 		useIPv6, err := cmd.Flags().GetBool("ipv6")
 		if err != nil {
-			cmd.Printf("Failed to get ipv6 flag: %v\n", err)
-			return nil
+			return fmt.Errorf("failed to get ipv6 flag: %w", err)
 		}
 
 		endpoint, err := config.SelectEndpointFromConfig(useHTTP2, useIPv6, connectPort)
 		if err != nil {
-			cmd.Printf("Failed to select endpoint: %v\n", err)
-			return nil
+			return fmt.Errorf("failed to select endpoint: %w", err)
 		}
 
 		if insecure {
@@ -109,54 +98,47 @@ var portFwCmd = &cobra.Command{
 
 		tunnelIPv4, err := cmd.Flags().GetBool("no-tunnel-ipv4")
 		if err != nil {
-			cmd.Printf("Failed to get no tunnel IPv4: %v\n", err)
-			return nil
+			return fmt.Errorf("failed to get no tunnel IPv4: %w", err)
 		}
 
 		tunnelIPv6, err := cmd.Flags().GetBool("no-tunnel-ipv6")
 		if err != nil {
-			cmd.Printf("Failed to get no tunnel IPv6: %v\n", err)
-			return nil
+			return fmt.Errorf("failed to get no tunnel IPv6: %w", err)
 		}
 
 		var localAddresses []netip.Addr
 		if !tunnelIPv4 {
 			v4, err := netip.ParseAddr(config.AppConfig.IPv4)
 			if err != nil {
-				cmd.Printf("Failed to parse IPv4 address: %v\n", err)
-				return nil
+				return fmt.Errorf("failed to parse IPv4 address: %w", err)
 			}
 			localAddresses = append(localAddresses, v4)
 		}
 		if !tunnelIPv6 {
 			v6, err := netip.ParseAddr(config.AppConfig.IPv6)
 			if err != nil {
-				cmd.Printf("Failed to parse IPv6 address: %v\n", err)
-				return nil
+				return fmt.Errorf("failed to parse IPv6 address: %w", err)
 			}
 			localAddresses = append(localAddresses, v6)
 		}
 
 		dnsServers, err := cmd.Flags().GetStringArray("dns")
 		if err != nil {
-			cmd.Printf("Failed to get DNS servers: %v\n", err)
-			return nil
+			return fmt.Errorf("failed to get DNS servers: %w", err)
 		}
 
 		var dnsAddrs []netip.Addr
 		for _, dns := range dnsServers {
 			addr, err := netip.ParseAddr(dns)
 			if err != nil {
-				cmd.Printf("Failed to parse DNS server: %v\n", err)
-				return nil
+				return fmt.Errorf("failed to parse DNS server: %w", err)
 			}
 			dnsAddrs = append(dnsAddrs, addr)
 		}
 
 		mtu, err := cmd.Flags().GetInt("mtu")
 		if err != nil {
-			cmd.Printf("Failed to get MTU: %v\n", err)
-			return nil
+			return fmt.Errorf("failed to get MTU: %w", err)
 		}
 		if mtu != 1280 {
 			log.Println("Warning: MTU is not the default 1280. This is not supported. Packet loss and other issues may occur.")
@@ -164,14 +146,12 @@ var portFwCmd = &cobra.Command{
 
 		localPorts, err := cmd.Flags().GetStringArray("local-ports")
 		if err != nil {
-			cmd.Printf("Failed to get local ports: %v\n", err)
-			return nil
+			return fmt.Errorf("failed to get local ports: %w", err)
 		}
 
 		remotePorts, err := cmd.Flags().GetStringArray("remote-ports")
 		if err != nil {
-			cmd.Printf("Failed to get remote ports: %v\n", err)
-			return nil
+			return fmt.Errorf("failed to get remote ports: %w", err)
 		}
 
 		var localPortMappings []internal.PortMapping
@@ -180,8 +160,7 @@ var portFwCmd = &cobra.Command{
 		for _, port := range localPorts {
 			portMapping, err := internal.ParsePortMapping(port)
 			if err != nil {
-				cmd.Printf("Failed to parse local port mapping: %v\n", err)
-				return nil
+				return fmt.Errorf("failed to parse local port mapping: %w", err)
 			}
 			localPortMappings = append(localPortMappings, portMapping)
 		}
@@ -189,51 +168,44 @@ var portFwCmd = &cobra.Command{
 		for _, port := range remotePorts {
 			portMapping, err := internal.ParsePortMapping(port)
 			if err != nil {
-				cmd.Printf("Failed to parse remote port mapping: %v\n", err)
-				return nil
+				return fmt.Errorf("failed to parse remote port mapping: %w", err)
 			}
 			remotePortMappings = append(remotePortMappings, portMapping)
 		}
 
 		reconnectDelay, err := cmd.Flags().GetDuration("reconnect-delay")
 		if err != nil {
-			cmd.Printf("Failed to get reconnect delay: %v\n", err)
-			return nil
+			return fmt.Errorf("failed to get reconnect delay: %w", err)
 		}
 
 		alwaysReconnect := true
 		alwaysChanged := cmd.Flags().Changed("always-reconnect")
 		dontAlwaysChanged := cmd.Flags().Changed("dont-always-reconnect")
 		if alwaysChanged && dontAlwaysChanged {
-			cmd.Printf("Use either --always-reconnect or --dont-always-reconnect, not both\n")
-			return nil
+			return fmt.Errorf("use either --always-reconnect or --dont-always-reconnect, not both")
 		}
 		if alwaysChanged {
 			alwaysReconnect, err = cmd.Flags().GetBool("always-reconnect")
 			if err != nil {
-				cmd.Printf("Failed to get always-reconnect flag: %v\n", err)
-				return nil
+				return fmt.Errorf("failed to get always-reconnect flag: %w", err)
 			}
 		}
 		if dontAlwaysChanged {
 			dontAlwaysReconnect, err := cmd.Flags().GetBool("dont-always-reconnect")
 			if err != nil {
-				cmd.Printf("Failed to get dont-always-reconnect flag: %v\n", err)
-				return nil
+				return fmt.Errorf("failed to get dont-always-reconnect flag: %w", err)
 			}
 			alwaysReconnect = !dontAlwaysReconnect
 		}
 
 		onConnect, err := cmd.Flags().GetString("on-connect")
 		if err != nil {
-			cmd.Printf("Failed to get on-connect flag: %v\n", err)
-			return nil
+			return fmt.Errorf("failed to get on-connect flag: %w", err)
 		}
 
 		onDisconnect, err := cmd.Flags().GetString("on-disconnect")
 		if err != nil {
-			cmd.Printf("Failed to get on-disconnect flag: %v\n", err)
-			return nil
+			return fmt.Errorf("failed to get on-disconnect flag: %w", err)
 		}
 
 		hookEnv := map[string]string{
@@ -244,8 +216,7 @@ var portFwCmd = &cobra.Command{
 
 		tunDev, tunNet, err := netstack.CreateNetTUN(localAddresses, dnsAddrs, mtu)
 		if err != nil {
-			cmd.Printf("Failed to create virtual TUN device: %v\n", err)
-			return nil
+			return fmt.Errorf("failed to create virtual TUN device: %w", err)
 		}
 		defer func() { _ = tunDev.Close() }()
 
@@ -271,8 +242,6 @@ var portFwCmd = &cobra.Command{
 			for _, pm := range group.mappings {
 				listener, err := listenForwardPort(tunNet, pm, group.remote)
 				if err != nil {
-					cmd.SilenceUsage = true
-					cmd.SilenceErrors = true
 					return err
 				}
 				forwards = append(forwards, forwarding{listener, pm, group.remote})
@@ -326,7 +295,7 @@ var portFwCmd = &cobra.Command{
 // listenForwardPort binds before maintenance starts so a failed mapping can
 // roll back all listeners without dialing the MASQUE endpoint.
 func listenForwardPort(netstackNet *netstack.Net, pm internal.PortMapping, isRemote bool) (net.Listener, error) {
-	addr := fmt.Sprintf("%s:%d", pm.BindAddress, pm.LocalPort)
+	addr := net.JoinHostPort(pm.BindAddress, fmt.Sprint(pm.LocalPort))
 	local, err := netip.ParseAddrPort(addr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid local address: %w", err)

@@ -184,3 +184,50 @@ func TestPortfwForwarderStopsAfterOwnerClosesListener(t *testing.T) {
 		})
 	}
 }
+
+func TestPortfwStartupConfigurationErrors(t *testing.T) {
+	cases := []struct {
+		name          string
+		change        func()
+		local, remote []string
+		expected      string
+	}{
+		{name: "unregistered", change: func() { config.ConfigLoaded = false }, expected: "config not loaded"},
+		{name: "private-key", change: func() { config.AppConfig.PrivateKey = "not-base64" }, expected: "private key"},
+		{name: "endpoint-key", change: func() { config.AppConfig.EndpointPubKey = "not-PEM" }, expected: "public key"},
+		{name: "endpoint-address", change: func() { config.AppConfig.EndpointV4 = "not-an-IP" }, expected: "endpoint_v4"},
+		{name: "local-mapping", local: []string{"invalid"}, expected: "local port mapping"},
+		{name: "remote-mapping", remote: []string{"invalid"}, expected: "remote port mapping"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			startupConfig(t, tc.local, tc.remote)
+			if tc.change != nil {
+				tc.change()
+			}
+			err := portFwCmd.RunE(portFwCmd, nil)
+			if err == nil || !strings.Contains(err.Error(), tc.expected) {
+				t.Fatalf("expected %s startup error, got %v", tc.expected, err)
+			}
+		})
+	}
+}
+
+func TestPortfwBindsNormalizedIPv6Address(t *testing.T) {
+	// ParsePortMapping resolves and normalizes bind addresses to IP.String(),
+	// without brackets. Binding must add brackets back for an IPv6 address.
+	dev, stack, err := netstack.CreateNetTUN([]netip.Addr{netip.MustParseAddr("fd00::2")}, nil, 1280)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dev.Close() }()
+	mapping := internal.PortMapping{BindAddress: "fd00::2"}
+	listener, err := listenForwardPort(stack, mapping, true)
+	if err != nil {
+		t.Fatalf("normalized IPv6 bind failed: %v", err)
+	}
+	defer func() { _ = listener.Close() }()
+	if !strings.HasPrefix(listener.Addr().String(), "[fd00::2]:") {
+		t.Fatalf("unexpected bound address %s", listener.Addr())
+	}
+}
