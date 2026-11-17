@@ -23,80 +23,80 @@ var portFwCmd = &cobra.Command{
 	Long: "This tool is useful if you have Cloudflare Zero Trust Gateway enabled and want to forward ports to/from the tunnel." +
 		" It creates a virtual TUN device and forward ports through it either from or to the client. It works a bit like SSH port forwarding. TCP only at the moment." +
 		"Doesn't require elevated privileges.",
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		if !config.ConfigLoaded {
 			cmd.Println("Config not loaded. Please register first.")
-			return
+			return nil
 		}
 
 		sni, err := cmd.Flags().GetString("sni-address")
 		if err != nil {
 			cmd.Printf("Failed to get SNI address: %v\n", err)
-			return
+			return nil
 		}
 
 		privKey, err := config.AppConfig.GetEcPrivateKey()
 		if err != nil {
 			cmd.Printf("Failed to get private key: %v\n", err)
-			return
+			return nil
 		}
 		peerPubKey, err := config.AppConfig.GetEcEndpointPublicKey()
 		if err != nil {
 			cmd.Printf("Failed to get public key: %v\n", err)
-			return
+			return nil
 		}
 
 		cert, err := internal.GenerateCert(privKey, &privKey.PublicKey)
 		if err != nil {
 			cmd.Printf("Failed to generate cert: %v\n", err)
-			return
+			return nil
 		}
 
 		insecure, err := cmd.Flags().GetBool("insecure")
 		if err != nil {
 			cmd.Printf("Failed to get insecure flag: %v\n", err)
-			return
+			return nil
 		}
 
 		tlsConfig, err := api.PrepareTlsConfig(privKey, peerPubKey, cert, sni, insecure)
 		if err != nil {
 			cmd.Printf("Failed to prepare TLS config: %v\n", err)
-			return
+			return nil
 		}
 
 		keepalivePeriod, err := cmd.Flags().GetDuration("keepalive-period")
 		if err != nil {
 			cmd.Printf("Failed to get keepalive period: %v\n", err)
-			return
+			return nil
 		}
 		initialPacketSize, err := cmd.Flags().GetUint16("initial-packet-size")
 		if err != nil {
 			cmd.Printf("Failed to get initial packet size: %v\n", err)
-			return
+			return nil
 		}
 
 		connectPort, err := cmd.Flags().GetInt("connect-port")
 		if err != nil {
 			cmd.Printf("Failed to get connect port: %v\n", err)
-			return
+			return nil
 		}
 
 		useHTTP2, err := cmd.Flags().GetBool("http2")
 		if err != nil {
 			cmd.Printf("Failed to get HTTP/2 flag: %v\n", err)
-			return
+			return nil
 		}
 
 		useIPv6, err := cmd.Flags().GetBool("ipv6")
 		if err != nil {
 			cmd.Printf("Failed to get ipv6 flag: %v\n", err)
-			return
+			return nil
 		}
 
 		endpoint, err := config.SelectEndpointFromConfig(useHTTP2, useIPv6, connectPort)
 		if err != nil {
 			cmd.Printf("Failed to select endpoint: %v\n", err)
-			return
+			return nil
 		}
 
 		if insecure {
@@ -110,13 +110,13 @@ var portFwCmd = &cobra.Command{
 		tunnelIPv4, err := cmd.Flags().GetBool("no-tunnel-ipv4")
 		if err != nil {
 			cmd.Printf("Failed to get no tunnel IPv4: %v\n", err)
-			return
+			return nil
 		}
 
 		tunnelIPv6, err := cmd.Flags().GetBool("no-tunnel-ipv6")
 		if err != nil {
 			cmd.Printf("Failed to get no tunnel IPv6: %v\n", err)
-			return
+			return nil
 		}
 
 		var localAddresses []netip.Addr
@@ -124,7 +124,7 @@ var portFwCmd = &cobra.Command{
 			v4, err := netip.ParseAddr(config.AppConfig.IPv4)
 			if err != nil {
 				cmd.Printf("Failed to parse IPv4 address: %v\n", err)
-				return
+				return nil
 			}
 			localAddresses = append(localAddresses, v4)
 		}
@@ -132,7 +132,7 @@ var portFwCmd = &cobra.Command{
 			v6, err := netip.ParseAddr(config.AppConfig.IPv6)
 			if err != nil {
 				cmd.Printf("Failed to parse IPv6 address: %v\n", err)
-				return
+				return nil
 			}
 			localAddresses = append(localAddresses, v6)
 		}
@@ -140,7 +140,7 @@ var portFwCmd = &cobra.Command{
 		dnsServers, err := cmd.Flags().GetStringArray("dns")
 		if err != nil {
 			cmd.Printf("Failed to get DNS servers: %v\n", err)
-			return
+			return nil
 		}
 
 		var dnsAddrs []netip.Addr
@@ -148,7 +148,7 @@ var portFwCmd = &cobra.Command{
 			addr, err := netip.ParseAddr(dns)
 			if err != nil {
 				cmd.Printf("Failed to parse DNS server: %v\n", err)
-				return
+				return nil
 			}
 			dnsAddrs = append(dnsAddrs, addr)
 		}
@@ -156,7 +156,7 @@ var portFwCmd = &cobra.Command{
 		mtu, err := cmd.Flags().GetInt("mtu")
 		if err != nil {
 			cmd.Printf("Failed to get MTU: %v\n", err)
-			return
+			return nil
 		}
 		if mtu != 1280 {
 			log.Println("Warning: MTU is not the default 1280. This is not supported. Packet loss and other issues may occur.")
@@ -165,13 +165,13 @@ var portFwCmd = &cobra.Command{
 		localPorts, err := cmd.Flags().GetStringArray("local-ports")
 		if err != nil {
 			cmd.Printf("Failed to get local ports: %v\n", err)
-			return
+			return nil
 		}
 
 		remotePorts, err := cmd.Flags().GetStringArray("remote-ports")
 		if err != nil {
 			cmd.Printf("Failed to get remote ports: %v\n", err)
-			return
+			return nil
 		}
 
 		var localPortMappings []internal.PortMapping
@@ -181,7 +181,7 @@ var portFwCmd = &cobra.Command{
 			portMapping, err := internal.ParsePortMapping(port)
 			if err != nil {
 				cmd.Printf("Failed to parse local port mapping: %v\n", err)
-				return
+				return nil
 			}
 			localPortMappings = append(localPortMappings, portMapping)
 		}
@@ -190,7 +190,7 @@ var portFwCmd = &cobra.Command{
 			portMapping, err := internal.ParsePortMapping(port)
 			if err != nil {
 				cmd.Printf("Failed to parse remote port mapping: %v\n", err)
-				return
+				return nil
 			}
 			remotePortMappings = append(remotePortMappings, portMapping)
 		}
@@ -198,7 +198,7 @@ var portFwCmd = &cobra.Command{
 		reconnectDelay, err := cmd.Flags().GetDuration("reconnect-delay")
 		if err != nil {
 			cmd.Printf("Failed to get reconnect delay: %v\n", err)
-			return
+			return nil
 		}
 
 		alwaysReconnect := true
@@ -206,20 +206,20 @@ var portFwCmd = &cobra.Command{
 		dontAlwaysChanged := cmd.Flags().Changed("dont-always-reconnect")
 		if alwaysChanged && dontAlwaysChanged {
 			cmd.Printf("Use either --always-reconnect or --dont-always-reconnect, not both\n")
-			return
+			return nil
 		}
 		if alwaysChanged {
 			alwaysReconnect, err = cmd.Flags().GetBool("always-reconnect")
 			if err != nil {
 				cmd.Printf("Failed to get always-reconnect flag: %v\n", err)
-				return
+				return nil
 			}
 		}
 		if dontAlwaysChanged {
 			dontAlwaysReconnect, err := cmd.Flags().GetBool("dont-always-reconnect")
 			if err != nil {
 				cmd.Printf("Failed to get dont-always-reconnect flag: %v\n", err)
-				return
+				return nil
 			}
 			alwaysReconnect = !dontAlwaysReconnect
 		}
@@ -227,13 +227,13 @@ var portFwCmd = &cobra.Command{
 		onConnect, err := cmd.Flags().GetString("on-connect")
 		if err != nil {
 			cmd.Printf("Failed to get on-connect flag: %v\n", err)
-			return
+			return nil
 		}
 
 		onDisconnect, err := cmd.Flags().GetString("on-disconnect")
 		if err != nil {
 			cmd.Printf("Failed to get on-disconnect flag: %v\n", err)
-			return
+			return nil
 		}
 
 		hookEnv := map[string]string{
@@ -245,9 +245,38 @@ var portFwCmd = &cobra.Command{
 		tunDev, tunNet, err := netstack.CreateNetTUN(localAddresses, dnsAddrs, mtu)
 		if err != nil {
 			cmd.Printf("Failed to create virtual TUN device: %v\n", err)
-			return
+			return nil
 		}
 		defer func() { _ = tunDev.Close() }()
+
+		type forwarding struct {
+			listener net.Listener
+			mapping  internal.PortMapping
+			remote   bool
+		}
+		var forwards []forwarding
+		stop := make(chan struct{})
+		defer func() {
+			close(stop)
+			for _, f := range forwards {
+				_ = f.listener.Close()
+			}
+		}()
+		for _, group := range []struct {
+			mappings []internal.PortMapping
+			remote   bool
+		}{
+			{localPortMappings, false}, {remotePortMappings, true},
+		} {
+			for _, pm := range group.mappings {
+				listener, err := listenForwardPort(tunNet, pm, group.remote)
+				if err != nil {
+					cmd.SilenceUsage = true
+					return err
+				}
+				forwards = append(forwards, forwarding{listener, pm, group.remote})
+			}
+		}
 
 		go api.MaintainTunnel(context.Background(), api.MaintainTunnelConfig{
 			TLSConfig:         tlsConfig,
@@ -266,24 +295,8 @@ var portFwCmd = &cobra.Command{
 
 		log.Printf("Virtual tunnel created, forwarding ports")
 
-		// Start Local Port Forwarding (-L)
-		for _, pm := range localPortMappings {
-			go func(pm internal.PortMapping) {
-				err := forwardPort(tunNet, pm, false) // false = local forwarding
-				if err != nil {
-					cmd.Printf("Error in local forwarding %d: %v\n", pm.LocalPort, err)
-				}
-			}(pm)
-		}
-
-		// Start Remote Port Forwarding (-R)
-		for _, pm := range remotePortMappings {
-			go func(pm internal.PortMapping) {
-				err := forwardPort(tunNet, pm, true) // true = remote forwarding
-				if err != nil {
-					cmd.Printf("Error in remote forwarding %d: %v\n", pm.LocalPort, err)
-				}
-			}(pm)
+		for _, f := range forwards {
+			go forwardPort(f.listener, tunNet, f.mapping, f.remote, stop)
 		}
 
 		// One packet must be sent in order to listen for incoming packets
@@ -296,12 +309,12 @@ var portFwCmd = &cobra.Command{
 		resp, err := client.Get("https://cloudflareok.com/test")
 		if err != nil {
 			cmd.Printf("Failed to make request to cloudflare.com: %v\n", err)
-			return
+			return nil
 		}
 		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != 204 {
 			cmd.Printf("Failed to make request to cloudflare.com: %s\n", resp.Status)
-			return
+			return nil
 		}
 		log.Println("Successfully connected to Cloudflare")
 
@@ -309,59 +322,43 @@ var portFwCmd = &cobra.Command{
 	},
 }
 
-// forwardPort sets up a local or remote port forwarding using either the MASQUE tunnel or the local network.
-//
-// Parameters:
-//   - netstackNet: *netstack.Net - The network stack used for handling remote forwarding.
-//   - pm: internal.PortMapping - The port mapping configuration containing bind address, local port, remote IP, and remote port.
-//   - isRemote: bool - Indicates whether the forwarding is remote (true) or local (false).
-//
-// Returns:
-//   - error: An error if port forwarding fails; otherwise, nil.
-func forwardPort(netstackNet *netstack.Net, pm internal.PortMapping, isRemote bool) error {
-	localAddrPort, err := netip.ParseAddrPort(fmt.Sprintf("%s:%d", pm.BindAddress, pm.LocalPort))
-	if err != nil {
-		return fmt.Errorf("invalid local address: %w", err)
-	}
-
+// listenForwardPort binds before maintenance starts so a failed mapping can
+// roll back all listeners without dialing the MASQUE endpoint.
+func listenForwardPort(netstackNet *netstack.Net, pm internal.PortMapping, isRemote bool) (net.Listener, error) {
+	addr := net.JoinHostPort(pm.BindAddress, fmt.Sprint(pm.LocalPort))
+	var listener net.Listener
+	var err error
 	if isRemote {
-		// Remote forwarding: Listen inside the MASQUE tunnel
-		listener, err := netstackNet.ListenTCPAddrPort(localAddrPort)
-		if err != nil {
-			return fmt.Errorf("failed to listen on %s: %w", localAddrPort, err)
-		}
-		defer func() { _ = listener.Close() }()
-
-		log.Printf("Remote forwarding: Listening on MASQUE network %s, forwarding to local %s:%d", localAddrPort, pm.RemoteIP, pm.RemotePort)
-
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				log.Printf("Accept error on %s: %v", localAddrPort, err)
-				continue
-			}
-
-			go handleConnection(conn, pm, isRemote, netstackNet)
+		var local netip.AddrPort
+		local, err = netip.ParseAddrPort(addr)
+		if err == nil {
+			listener, err = netstackNet.ListenTCPAddrPort(local)
 		}
 	} else {
-		// Local forwarding: Listen on local machine
-		listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", pm.BindAddress, pm.LocalPort))
+		listener, err = net.Listen("tcp", addr)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("listen on %s: %w", addr, err)
+	}
+	return listener, nil
+}
+
+// forwardPort serves an already-bound listener. stop is closed before the owner
+// closes its listeners; virtual listeners do not wrap net.ErrClosed.
+func forwardPort(listener net.Listener, netstackNet *netstack.Net, pm internal.PortMapping, isRemote bool, stop <-chan struct{}) {
+	log.Printf("Forwarding %s to %s:%d (remote listener: %t)", listener.Addr(), pm.RemoteIP, pm.RemotePort, isRemote)
+	for {
+		conn, err := listener.Accept()
 		if err != nil {
-			return fmt.Errorf("failed to listen on %s:%d: %w", pm.BindAddress, pm.LocalPort, err)
-		}
-		defer func() { _ = listener.Close() }()
-
-		log.Printf("Local forwarding: Listening on %s:%d, forwarding to remote %s:%d", pm.BindAddress, pm.LocalPort, pm.RemoteIP, pm.RemotePort)
-
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				log.Printf("Accept error on %s:%d: %v", pm.BindAddress, pm.LocalPort, err)
+			select {
+			case <-stop:
+				return
+			default:
+				log.Printf("Accept error on %s: %v", listener.Addr(), err)
 				continue
 			}
-
-			go handleConnection(conn, pm, isRemote, netstackNet)
 		}
+		go handleConnection(conn, pm, isRemote, netstackNet)
 	}
 }
 
